@@ -5,7 +5,7 @@ Cvent Events app, without installing the app.
 
 **Site:** <https://cvents.bb8.fun> · **API docs:** <https://cvents.bb8.fun/api/>
 
-> Draft. Unofficial and not affiliated with Cvent. Event content belongs to the
+> :warning: Unofficial and not affiliated with Cvent. Event content belongs to the
 > organisers who published it; this project only mirrors what the app shows
 > to anyone without logging in.
 
@@ -27,8 +27,8 @@ Cvent Events app, without installing the app.
    and KV. Data refreshes hourly from three days before an event, otherwise every
    six hours.
 
-[`API.md`](API.md) explains the reverse-engineered API, and
-[`openapi.yaml`](openapi.yaml) describes it formally.
+[`API.md`](API.md) explains the reverse-engineered API, documented using
+[`openapi.yaml`](openapi.yaml)  as well.
 
 ## Layout
 
