@@ -22,11 +22,18 @@ async function cacheGet(kind, id) {
   return hit ? hit.json() : null;
 }
 
-function cachePut(kind, id, value, ttl) {
+export let lastPutError = "";
+
+async function cachePut(kind, id, value, ttl) {
   const body = JSON.stringify(value);
-  return caches.default.put(cacheKey(kind, id), new Response(body, {
-    headers: { "content-type": "application/json", "cache-control": `max-age=${ttl}` },
-  }));
+  try {
+    await caches.default.put(cacheKey(kind, id), new Response(body, {
+      headers: { "content-type": "application/json", "cache-control": `max-age=${ttl}` },
+    }));
+  } catch (e) {
+    lastPutError = `${kind}: ${e.message}`.slice(0, 200);
+    console.error("cache put", lastPutError);
+  }
 }
 
 function remember(id, value) {
@@ -118,12 +125,14 @@ const isFresh = (v) => Date.now() - v.at < (v.status === "gone" ? GONE_MS : FRES
 export async function loadEvent(entry, ctx, site) {
   origin = site;
   let hit = mem.get(entry.id);
+  let source = "mem";
   if (!hit) {
     hit = await cacheGet("event", entry.id);
+    source = "cache";
     if (hit) remember(entry.id, hit);
   }
-  if (hit && isFresh(hit)) return hit;
-  if (!hit) return refreshOnce(entry);
+  if (hit && isFresh(hit)) return { ...hit, source };
+  if (!hit) return { ...(await refreshOnce(entry)), source: "miss" };
   ctx.waitUntil(refreshOnce(entry).catch((e) => console.error("refresh", entry.id, e.message)));
-  return hit;
+  return { ...hit, source: `${source}-stale` };
 }

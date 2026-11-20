@@ -1,5 +1,5 @@
 import EVENTS from "./events.gen.json";
-import { loadEvent } from "./data.js";
+import { lastPutError, loadEvent } from "./data.js";
 import * as R from "./render.js";
 
 const BY_SLUG = new Map(EVENTS.map((e) => [e.slug, e]));
@@ -18,6 +18,8 @@ async function eventRoute(entry, rest, ctx, origin) {
   const loaded = await loadEvent(entry, ctx, origin);
   const res = await eventResponse(entry, rest, loaded, origin);
   res.headers.set("x-data-age", String(Math.round((Date.now() - loaded.at) / 1000)));
+  res.headers.set("x-cache", loaded.source);
+  if (lastPutError) res.headers.set("x-cache-error", lastPutError);
   return res;
 }
 
