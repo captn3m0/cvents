@@ -10,7 +10,7 @@
     "test": "node scripts/build-events.mjs && node --test test/*.test.mjs"
   },
   "devDependencies": {
-    "wrangler": "4.115.0",
-    "yaml": "^2.8.0"
+    "wrangler": "4.158.0",
+    "yaml": "2.9.1"
   }
 }
