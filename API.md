@@ -132,7 +132,8 @@ stripped) and `search` (FTS5). Reruns replace each event's rows.
   `npm test` and `wrangler deploy`. The deploy job uses the `production`
   environment, which holds the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets.
 - `worker/src/` fetches each event live (anonymous session, then `_changes`),
-  keeps only rendered fields, sanitises HTML and caches for 15 minutes. Stale data
+  keeps only rendered fields, sanitises HTML and caches it: 1 hour from three days before
+  an event until it ends, otherwise 6 hours. Stale data
   is served while it refreshes. Events that stop being public return 410.
 - Routes: `/`, `/past/`, `/e/{slug}/`, `/e/{slug}/sessions/{id}`,
   `/e/{slug}/speakers/[{id}]`, `/e/{slug}/exhibitors/`. `/sitemap.xml` is an index

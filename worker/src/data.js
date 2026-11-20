@@ -1,8 +1,9 @@
-import { ENVS, normalise } from "./model.js";
+import { ENVS, ended, normalise } from "./model.js";
 import { sanitizeModel } from "./sanitize.js";
 
 const UA = "cvent/1.0 CventEvents/2.9.0-3612840 (iPhone15,2; ios 18.1)";
-const FRESH_MS = 15 * 60 * 1000;
+const HOUR = 3600 * 1000;
+const SOON_MS = 3 * 24 * HOUR;
 const GONE_MS = 6 * 60 * 60 * 1000;
 const KEEP_S = 7 * 24 * 3600;
 const SESSION_S = 23 * 3600;
@@ -138,7 +139,16 @@ function refreshOnce(entry) {
   return inflight.get(entry.id);
 }
 
-const isFresh = (v) => Date.now() - v.at < (v.status === "gone" ? GONE_MS : FRESH_MS);
+// Refresh hourly from three days before an event until it ends, every 6 hours otherwise.
+export function freshFor(entry, v, now = Date.now()) {
+  if (v.status === "gone") return GONE_MS;
+  const start = v.data?.event?.start || entry.start;
+  const end = v.data?.event?.end || entry.end;
+  const near = !!start && Date.parse(start) - now < SOON_MS && !ended(end, now);
+  return near ? HOUR : 6 * HOUR;
+}
+
+const isFresh = (entry, v) => Date.now() - v.at < freshFor(entry, v);
 
 // Look in memory, then the colo cache, then KV; serve stale data while refreshing in the background.
 export async function loadEvent(entry, ctx, site, store) {
@@ -150,7 +160,7 @@ export async function loadEvent(entry, ctx, site, store) {
     hit = await cacheGet("event", entry.id);
     source = "cache";
   }
-  if (!hit || !isFresh(hit)) {
+  if (!hit || !isFresh(entry, hit)) {
     const fromKv = await kvGet(entry.id);
     if (fromKv && (!hit || fromKv.at > hit.at)) {
       hit = fromKv;
@@ -159,7 +169,7 @@ export async function loadEvent(entry, ctx, site, store) {
     }
   }
   if (hit) remember(entry.id, hit);
-  if (hit && isFresh(hit)) return { ...hit, source };
+  if (hit && isFresh(entry, hit)) return { ...hit, source };
   if (!hit) return { ...(await refreshOnce(entry)), source: "miss" };
   ctx.waitUntil(refreshOnce(entry).catch((e) => console.error("refresh", entry.id, e.message)));
   return { ...hit, source: `${source}-stale` };

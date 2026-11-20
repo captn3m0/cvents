@@ -61,3 +61,13 @@ test("treats events as ended a day after they finish", async () => {
   assert.equal(ended("2026-11-19T11:00:00Z", now), true);
   assert.equal(ended(undefined, now), false);
 });
+
+test("refreshes hourly near an event and every 6 hours otherwise", async () => {
+  const { freshFor } = await import("../worker/src/data.js");
+  const now = Date.parse("2026-11-20T12:00:00Z");
+  const at = (start, end) => freshFor({ start, end }, { status: "ok" }, now) / 3600000;
+  assert.equal(at("2026-12-20T00:00:00Z", "2026-12-21T00:00:00Z"), 6);
+  assert.equal(at("2026-11-22T00:00:00Z", "2026-11-23T00:00:00Z"), 1);
+  assert.equal(at("2026-11-19T00:00:00Z", "2026-11-21T00:00:00Z"), 1);
+  assert.equal(at("2026-11-01T00:00:00Z", "2026-11-02T00:00:00Z"), 6);
+});
