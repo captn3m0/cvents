@@ -35,11 +35,12 @@ jobs:
             echo "No new events"
             exit 0
           fi
-          n=$(git diff --cached --name-only | wc -l)
+          added=$(git diff --cached --name-status | grep -c '^A' || true)
+          updated=$(git diff --cached --name-status | grep -c '^M' || true)
           git -c user.name="github-actions[bot]" \
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-              commit -m "[events] Add ${n} discovered events" \
-                     -m "Added by the scheduled discovery run."
+              commit -m "[events] Add ${added}, update ${updated} events" \
+                     -m "From the scheduled discovery run."
           git push
 
   deploy:

@@ -125,10 +125,10 @@ stripped) and `search` (FTS5). Reruns replace each event's rows.
 ## Site (Cloudflare Worker)
 
 - `scripts/discover.py` runs the search sweep and writes `events/{id}.yml` for
-  each new public event (id, env, slug, title, dates, place). Existing files are
-  never rewritten. To drop an event, set `hidden: true`; deleting the file lets
-  the next run add it back.
-- `.github/workflows/site.yml` runs discovery daily, commits new files, then runs
+  each public event (id, env, slug, title, dates, place). Each run refreshes those
+  fields in existing files but keeps the slug and any other keys. To drop an event,
+  set `hidden: true`; deleting the file lets the next run add it back.
+- `.github/workflows/site.yml` runs discovery daily, commits changed files, then runs
   `npm test` and `wrangler deploy`. The deploy job uses the `production`
   environment, which holds the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets.
 - `worker/src/` fetches each event live (anonymous session, then `_changes`),

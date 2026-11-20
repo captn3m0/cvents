@@ -2,7 +2,7 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Search for public Cvent events and add events/{id}.yml for each new one."""
+"""Search for public Cvent events and add or refresh events/{id}.yml for each one."""
 import argparse
 import datetime as dt
 import json
@@ -32,11 +32,28 @@ def quote(v):
     return json.dumps(v, ensure_ascii=False).replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
 
 
-def to_yaml(card, today):
+MANAGED = {"id", "env", "slug"} | {k for k, _ in FIELDS}
+
+
+def unmanaged(existing):
+    keep, skipping = [], False
+    for line in existing.splitlines():
+        m = re.match(r"([A-Za-z_]\w*)\s*:", line)
+        if m:
+            skipping = m.group(1) in MANAGED
+        elif not line[:1].isspace():
+            skipping = False
+        if not skipping:
+            keep.append(line)
+    return keep
+
+
+def to_yaml(card, today, existing=""):
+    slug = re.search(r"^slug:\s*(\S+)\s*$", existing, re.M)
     lines = [f"id: {card['id']}", f"env: {card['environment']}",
-             f"slug: {slugify(card.get('title'), card['id'])}"]
+             f"slug: {slug.group(1) if slug else slugify(card.get('title'), card['id'])}"]
     lines += [f"{k}: {quote(str(card[src]).strip())}" for k, src in FIELDS if str(card.get(src) or "").strip()]
-    lines.append(f"discovered: {today}")
+    lines += unmanaged(existing) if existing else [f"discovered: {today}"]
     return "\n".join(lines) + "\n"
 
 
@@ -61,11 +78,17 @@ def main(argv=None):
     cards = [c for c in found.values() if cv.is_public(c, start, end, a.max_duration_days)
              and not skip.search(c.get("title") or "")]
     a.dir.mkdir(parents=True, exist_ok=True)
-    new = [c for c in sorted(cards, key=lambda c: c["startDate"])
-           if not (a.dir / f"{c['id']}.yml").exists()][:a.max_new]
-    for c in new:
-        (a.dir / f"{c['id']}.yml").write_text(to_yaml(c, now.date().isoformat()), encoding="utf-8")
-    log.info("%d public events found, %d new files in %s", len(cards), len(new), a.dir)
+    added = updated = 0
+    for c in sorted(cards, key=lambda c: c["startDate"]):
+        path = a.dir / f"{c['id']}.yml"
+        old = path.read_text(encoding="utf-8") if path.exists() else ""
+        if not old and a.max_new is not None and added >= a.max_new:
+            continue
+        text = to_yaml(c, now.date().isoformat(), old)
+        if text != old:
+            path.write_text(text, encoding="utf-8")
+            added, updated = added + (not old), updated + bool(old)
+    log.info("%d public events found: %d added, %d updated in %s", len(cards), added, updated, a.dir)
 
 
 if __name__ == "__main__":
