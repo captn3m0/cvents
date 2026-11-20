@@ -14,7 +14,8 @@ const inflight = new Map();
 
 class Gone extends Error {}
 
-const cacheKey = (kind, id) => new Request(`https://cache.internal/v1/${kind}/${id}`);
+let origin = "https://cvents.bb8.fun";
+const cacheKey = (kind, id) => new Request(`${origin}/__cache/v1/${kind}/${id}`);
 
 async function cacheGet(kind, id) {
   const hit = await caches.default.match(cacheKey(kind, id));
@@ -114,7 +115,8 @@ function refreshOnce(entry) {
 const isFresh = (v) => Date.now() - v.at < (v.status === "gone" ? GONE_MS : FRESH_MS);
 
 // Serve fresh data, else stale data while refreshing in the background, else wait for upstream.
-export async function loadEvent(entry, ctx) {
+export async function loadEvent(entry, ctx, site) {
+  origin = site;
   let hit = mem.get(entry.id);
   if (!hit) {
     hit = await cacheGet("event", entry.id);

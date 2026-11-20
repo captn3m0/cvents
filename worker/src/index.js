@@ -15,7 +15,13 @@ function split(now) {
 }
 
 async function eventRoute(entry, rest, ctx, origin) {
-  const loaded = await loadEvent(entry, ctx);
+  const loaded = await loadEvent(entry, ctx, origin);
+  const res = await eventResponse(entry, rest, loaded, origin);
+  res.headers.set("x-data-age", String(Math.round((Date.now() - loaded.at) / 1000)));
+  return res;
+}
+
+async function eventResponse(entry, rest, loaded, origin) {
   if (loaded.status === "gone") {
     return send(R.messagePage("Event unavailable", "This event is no longer publicly available.", { origin, entry }), 410);
   }
