@@ -14,8 +14,8 @@ function split(now) {
   return [EVENTS.filter((e) => (e.end || e.start || "") >= t), EVENTS.filter((e) => (e.end || e.start || "") < t)];
 }
 
-async function eventRoute(entry, rest, ctx, origin) {
-  const loaded = await loadEvent(entry, ctx, origin);
+async function eventRoute(entry, rest, ctx, origin, env) {
+  const loaded = await loadEvent(entry, ctx, origin, env.CACHE);
   const res = await eventResponse(entry, rest, loaded, origin);
   res.headers.set("x-data-age", String(Math.round((Date.now() - loaded.at) / 1000)));
   res.headers.set("x-cache", loaded.source);
@@ -32,8 +32,7 @@ async function eventResponse(entry, rest, loaded, origin) {
   const notFound = () => send(R.messagePage("Not found", "That page does not exist for this event.", opts), 404);
   if (rest.length === 0) return send(R.eventPage(entry, d, opts));
   if (rest[0] === "sitemap.xml" && rest.length === 1) {
-    const lastmod = new Date(loaded.at).toISOString().slice(0, 10);
-    return send(R.urlset(R.eventUrls(entry, d, origin, lastmod)), 200, "application/xml; charset=utf-8", 3600);
+    return send(R.urlset(R.eventUrls(entry, d, origin)), 200, "application/xml; charset=utf-8", 3600);
   }
   const [kind, id] = rest;
   if (kind === "speakers" && rest.length === 1) return d.speakers.length ? send(R.speakersPage(entry, d, opts)) : notFound();
@@ -49,7 +48,7 @@ async function eventResponse(entry, rest, loaded, origin) {
   return notFound();
 }
 
-async function route(url, ctx) {
+async function route(url, ctx, env) {
   const origin = url.origin;
   const path = url.pathname;
   if (path === "/" || path === "/past/") {
@@ -73,7 +72,7 @@ async function route(url, ctx) {
     if (!m[2]) return redirect(`/e/${entry.slug}/`);
     const rest = m[2].split("/").filter(Boolean);
     if (m[2].endsWith("/") && rest.length === 2) return redirect(`/e/${entry.slug}/${rest.join("/")}`);
-    return eventRoute(entry, rest, ctx, origin);
+    return eventRoute(entry, rest, ctx, origin, env);
   }
   return null;
 }
@@ -85,7 +84,7 @@ export default {
     }
     const url = new URL(req.url);
     try {
-      const res = await route(url, ctx);
+      const res = await route(url, ctx, env);
       return res ?? send(R.messagePage("Not found", "No such page.", { origin: url.origin }), 404);
     } catch (e) {
       console.error("render", url.pathname, e.stack || e.message);

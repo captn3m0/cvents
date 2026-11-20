@@ -15,6 +15,7 @@ const inflight = new Map();
 class Gone extends Error {}
 
 let origin = "https://cvents.bb8.fun";
+let kv = null;
 const cacheKey = (kind, id) => new Request(`${origin}/__cache/v1/${kind}/${id}`);
 
 async function cacheGet(kind, id) {
@@ -23,6 +24,24 @@ async function cacheGet(kind, id) {
 }
 
 export let lastPutError = "";
+
+async function kvGet(id) {
+  try {
+    return kv ? await kv.get(`event:${id}`, "json") : null;
+  } catch (e) {
+    console.error("kv get", e.message);
+    return null;
+  }
+}
+
+async function kvPut(id, value) {
+  try {
+    if (kv) await kv.put(`event:${id}`, JSON.stringify(value), { expirationTtl: KEEP_S });
+  } catch (e) {
+    lastPutError = `kv: ${e.message}`.slice(0, 200);
+    console.error("kv put", lastPutError);
+  }
+}
 
 async function cachePut(kind, id, value, ttl) {
   const body = JSON.stringify(value);
@@ -108,7 +127,7 @@ async function refresh(entry) {
     value = { at: Date.now(), status: "gone" };
   }
   remember(entry.id, value);
-  await cachePut("event", entry.id, value, KEEP_S);
+  await Promise.all([cachePut("event", entry.id, value, KEEP_S), kvPut(entry.id, value)]);
   return value;
 }
 
@@ -121,16 +140,25 @@ function refreshOnce(entry) {
 
 const isFresh = (v) => Date.now() - v.at < (v.status === "gone" ? GONE_MS : FRESH_MS);
 
-// Serve fresh data, else stale data while refreshing in the background, else wait for upstream.
-export async function loadEvent(entry, ctx, site) {
+// Look in memory, then the colo cache, then KV; serve stale data while refreshing in the background.
+export async function loadEvent(entry, ctx, site, store) {
   origin = site;
+  kv = store ?? null;
   let hit = mem.get(entry.id);
   let source = "mem";
   if (!hit) {
     hit = await cacheGet("event", entry.id);
     source = "cache";
-    if (hit) remember(entry.id, hit);
   }
+  if (!hit || !isFresh(hit)) {
+    const fromKv = await kvGet(entry.id);
+    if (fromKv && (!hit || fromKv.at > hit.at)) {
+      hit = fromKv;
+      source = "kv";
+      ctx.waitUntil(cachePut("event", entry.id, hit, KEEP_S));
+    }
+  }
+  if (hit) remember(entry.id, hit);
   if (hit && isFresh(hit)) return { ...hit, source };
   if (!hit) return { ...(await refreshOnce(entry)), source: "miss" };
   ctx.waitUntil(refreshOnce(entry).catch((e) => console.error("refresh", entry.id, e.message)));
