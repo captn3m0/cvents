@@ -92,7 +92,8 @@ ${blocks.map(ld).join("\n")}${head}
 <style>${CSS}</style></head><body>
 <header class="site">${out(html`<a href="/">${SITE}</a>${crumbs.map(([href, label]) => html` / <a href="${href}">${label}</a>`)}`)}</header>
 <main>${out(body)}</main>
-<footer>Unofficial mirror of public event schedules published through the Cvent Events app. Times are shown in each event's local time zone.</footer>
+<footer>Unofficial mirror of public event schedules published through the Cvent Events app. Times are shown in each event's local time zone.
+<a href="/api/">API documentation</a> · <a href="https://github.com/captn3m0/cvents">Source</a></footer>
 </body></html>`;
 }
 
@@ -308,4 +309,20 @@ export function eventUrls(entry, d, origin, lastmod) {
     ...(d.exhibitors.length ? [[`${base}exhibitors/`, lastmod]] : []),
     ...d.sessions.map((s) => [`${base}sessions/${s.id}`, lastmod]),
     ...d.speakers.map((p) => [`${base}speakers/${p.id}`, lastmod])];
+}
+
+const SPEC = "https://raw.githubusercontent.com/captn3m0/cvents/main/openapi.yaml";
+
+export function apiPage(origin) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cvent Events API · ${SITE}</title>
+<meta name="description" content="OpenAPI description of the Cvent Events app API: event search, anonymous sync sessions and Sync Gateway documents.">
+<link rel="canonical" href="${escapeHtml(origin)}/api/">
+<style>body{margin:0}.top{font:14px system-ui,sans-serif;padding:8px 16px;border-bottom:1px solid #e3e7ec}</style></head><body>
+<div class="top"><a href="/">${SITE}</a> / API · <a href="${SPEC}">openapi.yaml</a></div>
+<redoc spec-url="${SPEC}" disable-telemetry="true"></redoc>
+<script type="module" src="https://cdn.jsdelivr.net/npm/redoc@3.1.0/bundles/redoc.standalone.js"
+ integrity="sha384-JeMYOUn7XELj12XQpz8IRcyCi5pih2IAwvXmTcH3IAFVWrAXJVRNa64PuS3MIj9/" crossorigin="anonymous"></script>
+</body></html>`;
 }

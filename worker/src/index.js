@@ -64,10 +64,12 @@ async function route(url, ctx, env) {
     return send(R.indexPage(path === "/" ? upcoming : past, { origin, past: path !== "/" }));
   }
   if (path === "/past") return redirect("/past/");
+  if (path === "/api/") return send(R.apiPage(origin), 200, undefined, 3600);
+  if (path === "/api") return redirect("/api/");
   if (path === "/robots.txt") return send(`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`, 200, "text/plain", 86400);
   if (path === "/sitemap.xml") return send(R.sitemapIndex(EVENTS, origin), 200, "application/xml; charset=utf-8", 3600);
   if (path === "/sitemaps/events.xml") {
-    const urls = [[`${origin}/`], [`${origin}/past/`], ...EVENTS.map((e) => [`${origin}/e/${e.slug}/`])];
+    const urls = [[`${origin}/`], [`${origin}/past/`], [`${origin}/api/`], ...EVENTS.map((e) => [`${origin}/e/${e.slug}/`])];
     return send(R.urlset(urls), 200, "application/xml; charset=utf-8", 3600);
   }
   const m = path.match(/^\/e\/([a-z0-9-]+)(\/.*)?$/);
