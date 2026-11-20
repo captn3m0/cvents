@@ -24,7 +24,7 @@ ol.list{list-style:none;padding:0;margin:0}ol.list>li{border-bottom:1px solid va
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;list-style:none;padding:0}
 .card{border:1px solid var(--line);border-radius:8px;padding:12px}.card img,.avatar{width:64px;height:64px;object-fit:cover;border-radius:50%;background:var(--chip)}
 .logo{width:96px;height:64px;object-fit:contain;border-radius:4px}.hero{width:100%;max-height:280px;object-fit:cover;border-radius:8px}
-.prose img{max-width:100%;height:auto}footer{margin-top:48px;padding-bottom:32px;font-size:13px;color:var(--muted)}
+.prose img{max-width:100%;height:auto}.subscribe{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0}footer{margin-top:48px;padding-bottom:32px;font-size:13px;color:var(--muted)}
 @media (max-width:600px){ol.list>li{flex-direction:column;gap:2px}.when{flex:none}}
 `;
 
@@ -53,7 +53,15 @@ export function dateRange(start, end, zone = "UTC") {
 }
 
 const place = (e) => [e.venue, e.city, e.state, e.country].filter(Boolean).join(", ");
-const textOf = (h) => String(h ?? "").replace(/<[^>]*>/g, " ").replace(/&[#\w]+;/g, " ").replace(/\s+/g, " ").trim();
+const ENT = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+const decode = (s) => s.replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (m, c) => {
+  if (c[0] !== "#") return ENT[c.toLowerCase()] ?? " ";
+  const n = c[1] === "x" || c[1] === "X" ? parseInt(c.slice(2), 16) : parseInt(c.slice(1), 10);
+  return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : " ";
+});
+export const textOf = (h) => decode(String(h ?? "").replace(/<(br|\/p|\/li|\/h\d)[^>]*>/gi, "\n").replace(/<[^>]*>/g, " "))
+  .replace(/[ \t]+/g, " ").replace(/ *\n[\s]*/g, "\n").trim();
+const oneLine = (h) => textOf(h).replace(/\s+/g, " ");
 const host = (u) => { try { return new URL(u).host; } catch { return u; } };
 const clip = (s, n = 160) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
@@ -70,7 +78,7 @@ function breadcrumbs(crumbs, name, canonical) {
 
 const plural = (n, w) => (n ? `${n} ${w}${n === 1 ? "" : "s"}` : "");
 
-export function layout({ title, name, description, canonical, body, jsonld, image, crumbs = [], type = "website", noindex = false }) {
+export function layout({ title, name, description, canonical, body, jsonld, image, crumbs = [], type = "website", noindex = false, head = "" }) {
   const desc = description ? clip(description) : "";
   const blocks = [jsonld, breadcrumbs(crumbs, name ?? title, canonical)].flat().filter(Boolean);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -80,7 +88,7 @@ ${meta("description", desc, "name")}${noindex ? meta("robots", "noindex", "name"
 ${canonical ? `<link rel="canonical" href="${escapeHtml(canonical)}">` : ""}
 ${meta("og:site_name", SITE)}${meta("og:type", type)}${meta("og:title", name ?? title)}${meta("og:description", desc)}
 ${meta("og:url", canonical)}${meta("og:image", image)}${meta("twitter:card", image ? "summary_large_image" : "summary", "name")}
-${blocks.map(ld).join("\n")}
+${blocks.map(ld).join("\n")}${head}
 <style>${CSS}</style></head><body>
 <header class="site">${out(html`<a href="/">${SITE}</a>${crumbs.map(([href, label]) => html` / <a href="${href}">${label}</a>`)}`)}</header>
 <main>${out(body)}</main>
@@ -104,6 +112,7 @@ export function indexPage(events, { origin, past }) {
   const title = past ? `Past events · ${SITE}` : `${SITE}: agendas, speakers and exhibitors`;
   return layout({
     title, canonical: `${origin}${past ? "/past/" : "/"}`,
+    head: past ? "" : '<meta name="google-site-verification" content="dpX2x5AsdnOqPxHemSPMifMV1Tf3jnnJGJzhbjkLqqg">',
     description: `Agendas, speakers and exhibitors for ${events.length} ${past ? "past" : "upcoming"} conferences and events, readable without installing an app.`,
     body: html`<h1>${past ? "Past events" : "Upcoming events"}</h1>
 <p class="muted">${events.length} events. ${past ? html`<a href="/">Upcoming events</a>` : html`<a href="/past/">Past events</a>`}</p>
@@ -111,13 +120,24 @@ ${eventList(past ? [...events].reverse() : events)}`,
   });
 }
 
-function eventHeader(entry, d, tab) {
+export const ATCB = `<script src="https://cdn.jsdelivr.net/npm/add-to-calendar-button@3.5.1/dist/atcb.min.js"
+ integrity="sha384-lmnBnxg9b0+6VcWEE9T+Nj5rTh4K7s838FrfSQKT20CvpuXOHIqPbaYfcnejDWP6" crossorigin="anonymous" async defer></script>`;
+
+function subscribe(entry, d, origin) {
+  const ics = `${origin}/e/${entry.slug}/calendar.ics`;
+  return html`<div class="subscribe"><add-to-calendar-button name="${d.event.title}" subscribe="true" icsFile="${ics}"
+ options="'Apple','Google','iCal','Outlook.com','Microsoft365'" label="Subscribe to the agenda" lightMode="system"></add-to-calendar-button>
+<a class="muted" href="/e/${entry.slug}/calendar.ics">calendar.ics</a></div>`;
+}
+
+function eventHeader(entry, d, tab, origin) {
   const e = d.event;
   const base = `/e/${entry.slug}/`;
   const tabs = [["", "Agenda", true], ["speakers/", `Speakers (${d.speakers.length})`, d.speakers.length],
     ["exhibitors/", `Exhibitors (${d.exhibitors.length})`, d.exhibitors.length]];
   return html`<h1>${e.title}</h1>
 <p class="muted">${dateRange(e.start, e.end, e.zone)} · ${e.zone}${e.format ? ` · ${e.format}` : ""}<br>${place(e)}</p>
+${subscribe(entry, d, origin)}
 <nav class="tabs">${tabs.filter((t) => t[2]).map(([p, label]) => html`<a href="${base}${p}" class="${tab === p ? "on" : ""}">${label}</a>`)}</nav>`;
 }
 
@@ -127,7 +147,7 @@ function eventJsonLd(entry, d, origin) {
   const hybrid = /hybrid/i.test(e.format);
   return {
     "@context": "https://schema.org", "@type": "Event", name: e.title, url: `${origin}/e/${entry.slug}/`,
-    startDate: e.start, endDate: e.end, description: clip(textOf(e.descriptionHtml), 500) || undefined,
+    startDate: e.start, endDate: e.end, description: clip(oneLine(e.descriptionHtml), 500) || undefined,
     image: e.image || undefined,
     eventStatus: "https://schema.org/EventScheduled",
     eventAttendanceMode: `https://schema.org/${hybrid ? "Mixed" : online ? "Online" : "Offline"}EventAttendanceMode`,
@@ -171,10 +191,11 @@ export function eventPage(entry, d, { origin }) {
     name: e.title, canonical: `${origin}/e/${entry.slug}/`, image: e.image, type: "event",
     description: [`${dateRange(e.start, e.end, e.zone)}, ${place(e)}.`,
       [plural(d.sessions.length, "session"), plural(d.speakers.length, "speaker"), plural(d.exhibitors.length, "exhibitor")].filter(Boolean).join(", "),
-      textOf(e.descriptionHtml)].filter(Boolean).join(" "),
+      oneLine(e.descriptionHtml)].filter(Boolean).join(" "),
     noindex: !d.sessions.length && !d.speakers.length && !d.exhibitors.length,
+    head: ATCB,
     jsonld: eventJsonLd(entry, d, origin),
-    body: html`${eventHeader(entry, d, "")}
+    body: html`${eventHeader(entry, d, "", origin)}
 ${e.image ? html`<img class="hero" src="${e.image}" alt="${e.title}">` : ""}
 ${e.descriptionHtml ? html`<div class="prose">${raw(e.descriptionHtml)}</div>` : ""}
 ${d.sessions.length ? sessionRows(entry, d, d.sessions) : html`<p class="muted">No sessions have been published yet.</p>`}`,
@@ -186,11 +207,11 @@ export function sessionPage(entry, d, s, { origin }) {
   const people = speakerNames(d, s.speakers);
   return layout({
     title: `${s.name} · ${e.title}`, name: s.name, canonical: `${origin}/e/${entry.slug}/sessions/${s.id}`,
-    description: `${dayLabel(s.start, e.zone)}, ${time(s.start, e.zone)}${s.room ? `, ${s.room}` : ""} at ${e.title}. ${people.map((p) => p.name).join(", ")}${people.length ? ". " : ""}${textOf(s.descriptionHtml)}`,
+    description: `${dayLabel(s.start, e.zone)}, ${time(s.start, e.zone)}${s.room ? `, ${s.room}` : ""} at ${e.title}. ${people.map((p) => p.name).join(", ")}${people.length ? ". " : ""}${oneLine(s.descriptionHtml)}`,
     crumbs: [[`/e/${entry.slug}/`, e.title]], image: e.image, type: "event",
     jsonld: { "@context": "https://schema.org", "@type": "Event", name: s.name, url: `${origin}/e/${entry.slug}/sessions/${s.id}`,
       startDate: s.start, endDate: s.end || undefined, eventStatus: "https://schema.org/EventScheduled",
-      description: clip(textOf(s.descriptionHtml), 500) || undefined, image: e.image || undefined,
+      description: clip(oneLine(s.descriptionHtml), 500) || undefined, image: e.image || undefined,
       location: eventLocation(entry, d, origin), performer: people.map((p) => ({ "@type": "Person", name: p.name })),
       superEvent: { "@type": "Event", name: e.title, url: `${origin}/e/${entry.slug}/` } },
     body: html`<h1>${s.name}</h1>
@@ -212,8 +233,9 @@ export function speakersPage(entry, d, { origin }) {
   return layout({
     title: `Speakers · ${d.event.title}`, name: "Speakers", canonical: `${origin}/e/${entry.slug}/speakers/`, image: d.event.image,
     description: `${d.speakers.length} speakers at ${d.event.title}: ${d.speakers.slice(0, 12).map((p) => p.name).join(", ")}.`,
+    head: ATCB,
     crumbs: [[`/e/${entry.slug}/`, d.event.title]],
-    body: html`${eventHeader(entry, d, "speakers/")}${speakerGrid(entry, d.speakers)}`,
+    body: html`${eventHeader(entry, d, "speakers/", origin)}${speakerGrid(entry, d.speakers)}`,
   });
 }
 
@@ -223,7 +245,7 @@ export function speakerPage(entry, d, p, { origin }) {
   return layout({
     title: `${p.name} · ${d.event.title}`, name: p.name, canonical: `${origin}/e/${entry.slug}/speakers/${p.id}`,
     image: p.image || d.event.image, type: "profile",
-    description: `${[p.title || p.designation, p.company].filter(Boolean).join(", ") || "Speaker"} at ${d.event.title}. ${textOf(p.bioHtml)}`,
+    description: `${[p.title || p.designation, p.company].filter(Boolean).join(", ") || "Speaker"} at ${d.event.title}. ${oneLine(p.bioHtml)}`,
     crumbs: [[`/e/${entry.slug}/`, d.event.title], [`/e/${entry.slug}/speakers/`, "Speakers"]],
     jsonld: { "@context": "https://schema.org", "@type": "Person", name: p.name, jobTitle: p.title || undefined,
       worksFor: p.company ? { "@type": "Organization", name: p.company } : undefined, image: p.image || undefined },
@@ -242,8 +264,9 @@ export function exhibitorsPage(entry, d, { origin }) {
   return layout({
     title: `Exhibitors · ${d.event.title}`, name: "Exhibitors", canonical: `${origin}/e/${entry.slug}/exhibitors/`, image: d.event.image,
     description: `${d.exhibitors.length} exhibitors and sponsors at ${d.event.title}.`,
+    head: ATCB,
     crumbs: [[`/e/${entry.slug}/`, d.event.title]],
-    body: html`${eventHeader(entry, d, "exhibitors/")}${groups.map(([name, list]) => html`<h2>${name}</h2>
+    body: html`${eventHeader(entry, d, "exhibitors/", origin)}${groups.map(([name, list]) => html`<h2>${name}</h2>
 <ul class="grid">${list.map((x) => html`<li class="card" id="${x.id}">
 ${x.image ? html`<img class="logo" src="${x.image}" alt="${x.name} logo" loading="lazy">` : ""}
 <div><strong>${x.name}</strong>${x.booth ? html` <span class="chip">Booth ${x.booth}</span>` : ""}</div>

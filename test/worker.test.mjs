@@ -41,3 +41,15 @@ test("sitemap index lists every event", () => {
   assert.match(xml, /e\/a-1\/sitemap.xml/);
   assert.match(xml, /b&#38;c/);
 });
+
+test("builds a valid ICS feed", async () => {
+  const { calendar } = await import("../worker/src/ics.js");
+  const [entry, docs] = samples[0];
+  const d = normalise(entry, docs);
+  const ics = calendar(entry, d, "https://example.org", Date.parse("2026-11-20T00:00:00Z"));
+  const lines = ics.split("\r\n");
+  assert.equal(lines.at(-1), "");
+  assert.ok(lines.every((l) => new TextEncoder().encode(l).length <= 75));
+  assert.equal((ics.match(/^BEGIN:VEVENT/gm) ?? []).length, d.sessions.length);
+  assert.ok(!/\n(?!\s)[^\r]*\n/.test(ics.replace(/\r\n/g, "")), "bare LF in feed");
+});

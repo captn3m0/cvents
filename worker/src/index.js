@@ -1,5 +1,6 @@
 import EVENTS from "./events.gen.json";
 import { lastPutError, loadEvent } from "./data.js";
+import { calendar } from "./ics.js";
 import * as R from "./render.js";
 
 const BY_SLUG = new Map(EVENTS.map((e) => [e.slug, e]));
@@ -31,6 +32,9 @@ async function eventResponse(entry, rest, loaded, origin) {
   const opts = { origin };
   const notFound = () => send(R.messagePage("Not found", "That page does not exist for this event.", opts), 404);
   if (rest.length === 0) return send(R.eventPage(entry, d, opts));
+  if (rest[0] === "calendar.ics" && rest.length === 1) {
+    return send(calendar(entry, d, origin, loaded.at), 200, "text/calendar; charset=utf-8", 3600);
+  }
   if (rest[0] === "sitemap.xml" && rest.length === 1) {
     return send(R.urlset(R.eventUrls(entry, d, origin)), 200, "application/xml; charset=utf-8", 3600);
   }
