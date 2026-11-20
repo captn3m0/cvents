@@ -39,6 +39,7 @@ function fmt(iso, zone, opts) {
 const dayKey = (iso, zone) => fmt(iso, zone, { year: "numeric", month: "2-digit", day: "2-digit" });
 const dayLabel = (iso, zone) => fmt(iso, zone, { weekday: "long", month: "long", day: "numeric", year: "numeric" });
 const time = (iso, zone) => fmt(iso, zone, { hour: "numeric", minute: "2-digit" });
+const timeEl = (iso, zone) => html`<time datetime="${iso}">${time(iso, zone)}</time>`;
 
 export function dateRange(start, end, zone = "UTC") {
   const a = fmt(start, zone, { month: "short", day: "numeric", year: "numeric" });
@@ -51,13 +52,28 @@ const textOf = (h) => String(h ?? "").replace(/<[^>]*>/g, " ").replace(/&[#\w]+;
 const host = (u) => { try { return new URL(u).host; } catch { return u; } };
 const clip = (s, n = 160) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
-export function layout({ title, description, canonical, body, jsonld, crumbs = [] }) {
+const ld = (o) => `<script type="application/ld+json">${JSON.stringify(o).replace(/</g, "\\u003c")}</script>`;
+const meta = (k, v, attr = "property") => (v ? `<meta ${attr}="${k}" content="${escapeHtml(v)}">` : "");
+
+function breadcrumbs(crumbs, name, canonical) {
+  if (!crumbs.length || !canonical) return null;
+  const origin = new URL(canonical).origin;
+  const items = [[`${origin}/`, SITE], ...crumbs.map(([h, l]) => [`${origin}${h}`, l]), [canonical, name]];
+  return { "@context": "https://schema.org", "@type": "BreadcrumbList",
+    itemListElement: items.map(([item, n], i) => ({ "@type": "ListItem", position: i + 1, name: n, item })) };
+}
+
+export function layout({ title, name, description, canonical, body, jsonld, image, crumbs = [], type = "website" }) {
+  const desc = description ? clip(description) : "";
+  const blocks = [jsonld, breadcrumbs(crumbs, name ?? title, canonical)].flat().filter(Boolean);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)}</title>
-${description ? `<meta name="description" content="${escapeHtml(clip(description))}">` : ""}
+${meta("description", desc, "name")}
 ${canonical ? `<link rel="canonical" href="${escapeHtml(canonical)}">` : ""}
-${jsonld ? `<script type="application/ld+json">${JSON.stringify(jsonld).replace(/</g, "\\u003c")}</script>` : ""}
+${meta("og:site_name", SITE)}${meta("og:type", type)}${meta("og:title", name ?? title)}${meta("og:description", desc)}
+${meta("og:url", canonical)}${meta("og:image", image)}${meta("twitter:card", image ? "summary_large_image" : "summary", "name")}
+${blocks.map(ld).join("\n")}
 <style>${CSS}</style></head><body>
 <header class="site">${out(html`<a href="/">${SITE}</a>${crumbs.map(([href, label]) => html` / <a href="${href}">${label}</a>`)}`)}</header>
 <main>${out(body)}</main>
@@ -106,13 +122,19 @@ function eventJsonLd(entry, d, origin) {
     "@context": "https://schema.org", "@type": "Event", name: e.title, url: `${origin}/e/${entry.slug}/`,
     startDate: e.start, endDate: e.end, description: clip(textOf(e.descriptionHtml), 500) || undefined,
     image: e.image || undefined,
+    eventStatus: "https://schema.org/EventScheduled",
     eventAttendanceMode: `https://schema.org/${hybrid ? "Mixed" : online ? "Online" : "Offline"}EventAttendanceMode`,
-    location: online ? { "@type": "VirtualLocation", url: `${origin}/e/${entry.slug}/` } : {
+    location: eventLocation(entry, d, origin),
+    performer: d.speakers.slice(0, 20).map((s) => ({ "@type": "Person", name: s.name })),
+  };
+}
+
+function eventLocation(entry, d, origin) {
+  const e = d.event;
+  return /virtual/i.test(e.format) ? { "@type": "VirtualLocation", url: `${origin}/e/${entry.slug}/` } : {
       "@type": "Place", name: e.venue || e.city,
       address: { "@type": "PostalAddress", streetAddress: e.address.join(", ") || undefined, addressLocality: e.city || undefined,
         addressRegion: e.state || undefined, postalCode: e.postalCode || undefined, addressCountry: e.country || undefined },
-    },
-    performer: d.speakers.slice(0, 20).map((s) => ({ "@type": "Person", name: s.name })),
   };
 }
 
@@ -130,7 +152,7 @@ function sessionRows(entry, d, sessions) {
     days.get(k).push(s);
   }
   return html`${[...days.values()].map((list) => html`<h2>${dayLabel(list[0].start, zone)}</h2><ol class="list">${list.map((s) => html`
-<li><span class="when">${time(s.start, zone)}${s.end ? ` – ${time(s.end, zone)}` : ""}</span><span>
+<li><span class="when">${timeEl(s.start, zone)}${s.end ? html` – ${timeEl(s.end, zone)}` : ""}</span><span>
 <a href="/e/${entry.slug}/sessions/${s.id}">${s.name}</a>${s.featured ? html` <span class="chip">Featured</span>` : ""}<br>
 <span class="muted">${[s.room, s.category].filter(Boolean).join(" · ")}${s.speakers.length ? html`${s.room || s.category ? " · " : ""}${speakerNames(d, s.speakers).map((p) => p.name).join(", ")}` : ""}</span></span></li>`)}</ol>`)}`;
 }
@@ -138,11 +160,12 @@ function sessionRows(entry, d, sessions) {
 export function eventPage(entry, d, { origin }) {
   const e = d.event;
   return layout({
-    title: `${e.title} · Agenda`, canonical: `${origin}/e/${entry.slug}/`,
-    description: textOf(e.descriptionHtml) || `Agenda for ${e.title}, ${dateRange(e.start, e.end, e.zone)}, ${place(e)}.`,
+    title: `${e.title} agenda · ${[dateRange(e.start, e.end, e.zone), e.city].filter(Boolean).join(", ")}`,
+    name: e.title, canonical: `${origin}/e/${entry.slug}/`, image: e.image, type: "event",
+    description: `${dateRange(e.start, e.end, e.zone)}, ${place(e)}. ${d.sessions.length} sessions, ${d.speakers.length} speakers. ${textOf(e.descriptionHtml)}`,
     jsonld: eventJsonLd(entry, d, origin),
     body: html`${eventHeader(entry, d, "")}
-${e.image ? html`<img class="hero" src="${e.image}" alt="">` : ""}
+${e.image ? html`<img class="hero" src="${e.image}" alt="${e.title}">` : ""}
 ${e.descriptionHtml ? html`<div class="prose">${raw(e.descriptionHtml)}</div>` : ""}
 ${d.sessions.length ? sessionRows(entry, d, d.sessions) : html`<p class="muted">No sessions have been published yet.</p>`}`,
   });
@@ -152,11 +175,16 @@ export function sessionPage(entry, d, s, { origin }) {
   const e = d.event;
   const people = speakerNames(d, s.speakers);
   return layout({
-    title: `${s.name} · ${e.title}`, canonical: `${origin}/e/${entry.slug}/sessions/${s.id}`,
-    description: textOf(s.descriptionHtml) || `${s.name} at ${e.title}.`,
-    crumbs: [[`/e/${entry.slug}/`, e.title]],
+    title: `${s.name} · ${e.title}`, name: s.name, canonical: `${origin}/e/${entry.slug}/sessions/${s.id}`,
+    description: `${dayLabel(s.start, e.zone)}, ${time(s.start, e.zone)}${s.room ? `, ${s.room}` : ""} at ${e.title}. ${people.map((p) => p.name).join(", ")}${people.length ? ". " : ""}${textOf(s.descriptionHtml)}`,
+    crumbs: [[`/e/${entry.slug}/`, e.title]], image: e.image, type: "event",
+    jsonld: { "@context": "https://schema.org", "@type": "Event", name: s.name, url: `${origin}/e/${entry.slug}/sessions/${s.id}`,
+      startDate: s.start, endDate: s.end || undefined, eventStatus: "https://schema.org/EventScheduled",
+      description: clip(textOf(s.descriptionHtml), 500) || undefined, image: e.image || undefined,
+      location: eventLocation(entry, d, origin), performer: people.map((p) => ({ "@type": "Person", name: p.name })),
+      superEvent: { "@type": "Event", name: e.title, url: `${origin}/e/${entry.slug}/` } },
     body: html`<h1>${s.name}</h1>
-<p class="muted">${dayLabel(s.start, e.zone)}, ${time(s.start, e.zone)}${s.end ? ` – ${time(s.end, e.zone)}` : ""} (${e.zone})<br>
+<p class="muted">${dayLabel(s.start, e.zone)}, ${timeEl(s.start, e.zone)}${s.end ? html` – ${timeEl(s.end, e.zone)}` : ""} (${e.zone})<br>
 ${[s.room, s.category].filter(Boolean).join(" · ")}</p>
 ${s.descriptionHtml ? html`<div class="prose">${raw(s.descriptionHtml)}</div>` : ""}
 ${people.length ? html`<h2>Speakers</h2>${speakerGrid(entry, people)}` : ""}`,
@@ -165,15 +193,15 @@ ${people.length ? html`<h2>Speakers</h2>${speakerGrid(entry, people)}` : ""}`,
 
 function speakerGrid(entry, people) {
   return html`<ul class="grid">${people.map((p) => html`<li class="card">
-${p.image ? html`<img src="${p.image}" alt="" loading="lazy">` : html`<span class="avatar" style="display:block"></span>`}
+${p.image ? html`<img src="${p.image}" alt="${p.name}" loading="lazy">` : html`<span class="avatar" style="display:block"></span>`}
 <div><a href="/e/${entry.slug}/speakers/${p.id}">${p.name}</a></div>
 <div class="muted">${[p.title || p.designation, p.company].filter(Boolean).join(", ")}</div></li>`)}</ul>`;
 }
 
 export function speakersPage(entry, d, { origin }) {
   return layout({
-    title: `Speakers · ${d.event.title}`, canonical: `${origin}/e/${entry.slug}/speakers/`,
-    description: `${d.speakers.length} speakers at ${d.event.title}.`,
+    title: `Speakers · ${d.event.title}`, name: "Speakers", canonical: `${origin}/e/${entry.slug}/speakers/`, image: d.event.image,
+    description: `${d.speakers.length} speakers at ${d.event.title}: ${d.speakers.slice(0, 12).map((p) => p.name).join(", ")}.`,
     crumbs: [[`/e/${entry.slug}/`, d.event.title]],
     body: html`${eventHeader(entry, d, "speakers/")}${speakerGrid(entry, d.speakers)}`,
   });
@@ -183,12 +211,13 @@ export function speakerPage(entry, d, p, { origin }) {
   const sessions = d.sessions.filter((s) => s.speakers.includes(p.id));
   const links = Object.entries(p.links).filter(([, v]) => v);
   return layout({
-    title: `${p.name} · ${d.event.title}`, canonical: `${origin}/e/${entry.slug}/speakers/${p.id}`,
-    description: textOf(p.bioHtml) || `${p.name}, speaker at ${d.event.title}.`,
+    title: `${p.name} · ${d.event.title}`, name: p.name, canonical: `${origin}/e/${entry.slug}/speakers/${p.id}`,
+    image: p.image || d.event.image, type: "profile",
+    description: `${[p.title || p.designation, p.company].filter(Boolean).join(", ") || "Speaker"} at ${d.event.title}. ${textOf(p.bioHtml)}`,
     crumbs: [[`/e/${entry.slug}/`, d.event.title], [`/e/${entry.slug}/speakers/`, "Speakers"]],
     jsonld: { "@context": "https://schema.org", "@type": "Person", name: p.name, jobTitle: p.title || undefined,
       worksFor: p.company ? { "@type": "Organization", name: p.company } : undefined, image: p.image || undefined },
-    body: html`${p.image ? html`<img class="avatar" src="${p.image}" alt="">` : ""}
+    body: html`${p.image ? html`<img class="avatar" src="${p.image}" alt="${p.name}">` : ""}
 <h1>${[p.prefix, p.name].filter(Boolean).join(" ")}</h1>
 <p class="muted">${[p.title || p.designation, p.company].filter(Boolean).join(", ")}</p>
 ${links.length ? html`<p>${links.map(([k, v]) => html`<a href="${v}" rel="nofollow noopener">${k}</a> `)}</p>` : ""}
@@ -201,12 +230,12 @@ export function exhibitorsPage(entry, d, { origin }) {
   const groups = [...d.levels.map((l) => [l.name, d.exhibitors.filter((x) => x.level === l.id)]),
     ["Exhibitors", d.exhibitors.filter((x) => !d.levels.some((l) => l.id === x.level))]].filter(([, l]) => l.length);
   return layout({
-    title: `Exhibitors · ${d.event.title}`, canonical: `${origin}/e/${entry.slug}/exhibitors/`,
+    title: `Exhibitors · ${d.event.title}`, name: "Exhibitors", canonical: `${origin}/e/${entry.slug}/exhibitors/`, image: d.event.image,
     description: `${d.exhibitors.length} exhibitors and sponsors at ${d.event.title}.`,
     crumbs: [[`/e/${entry.slug}/`, d.event.title]],
     body: html`${eventHeader(entry, d, "exhibitors/")}${groups.map(([name, list]) => html`<h2>${name}</h2>
 <ul class="grid">${list.map((x) => html`<li class="card" id="${x.id}">
-${x.image ? html`<img class="logo" src="${x.image}" alt="" loading="lazy">` : ""}
+${x.image ? html`<img class="logo" src="${x.image}" alt="${x.name} logo" loading="lazy">` : ""}
 <div><strong>${x.name}</strong>${x.booth ? html` <span class="chip">Booth ${x.booth}</span>` : ""}</div>
 ${x.website ? html`<div><a href="${x.website}" rel="nofollow noopener">${host(x.website)}</a></div>` : ""}
 ${x.descriptionHtml ? html`<div class="prose muted">${raw(x.descriptionHtml)}</div>` : ""}</li>`)}</ul>`)}`,
