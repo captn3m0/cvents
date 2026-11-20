@@ -1,0 +1,16 @@
+{
+  "name": "cvent-events-mirror",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-events.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node scripts/build-events.mjs && node --test test/"
+  },
+  "devDependencies": {
+    "wrangler": "4.115.0",
+    "yaml": "^2.8.0"
+  }
+}

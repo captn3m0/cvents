@@ -1,0 +1,12 @@
+{
+ "cookie_name": "SyncGatewaySession",
+ "session_id": "0000000000000000000000000000000000000000",
+ "expires": "2026-11-21T18:34:45Z",
+ "publicChannels": [
+  "production::account::fa70f76e-0272-412c-bead-613922c81abd::translations",
+  "production::account::fa70f76e-0272-412c-bead-613922c81abd",
+  "production::event::da1f6296-bb82-42e1-b812-6babba2314da",
+  "production::global"
+ ],
+ "authenticatedChannels": []
+}

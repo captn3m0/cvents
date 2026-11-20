@@ -1,0 +1,69 @@
+name: Discover events and deploy
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: site
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Search for new public events
+        run: python3 scripts/discover.py --dir events
+      - name: Commit new event files
+        run: |
+          git add events
+          if git diff --cached --quiet; then
+            echo "No new events"
+            exit 0
+          fi
+          n=$(git diff --cached --name-only | wc -l)
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "[events] Add ${n} discovered events" \
+                     -m "Added by the scheduled discovery run."
+          git push
+
+  deploy:
+    needs: discover
+    if: ${{ !cancelled() && needs.discover.result != 'failure' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://cvents.bb8.fun
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Deploy worker
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -1,0 +1,659 @@
+openapi: 3.1.0
+info:
+  title: Cvent Events mobile API (public attendee subset)
+  version: "2.9.0-3612840"
+  description: |
+    Reverse engineered from the Cvent Events iOS app 2.9.0 (Hermes bytecode),
+    and verified against production on 2026-11-20.
+
+    Flow used by the app: search -> pick event -> anonymous sync session ->
+    replicate the event channel from Couchbase Sync Gateway -> render the
+    schedule, speakers and exhibitors from the local Couchbase Lite DB.
+
+    Two regions ("environments"). Use the matching host pair for an event:
+    - `production` (pr50, US): falcon-service-prod.us-east-1 / falcon-sg-mobile-pr50-prod.us-east-1
+    - `production-eu` (pr53, EU): falcon-service-prod.eu-west-1 / falcon-sg-mobile-pr53-prod.eu-west-1
+
+    The app sends `User-Agent: cvent/1.0 CventEvents/{CVENT_VERSION} ({model}; ios {osVersion})`;
+    the server does not require it.
+servers:
+  - url: https://falcon-service-prod.us-east-1.lb.cvent.com/pr50/falcon/v1
+    description: Falcon service, US (environment=production)
+  - url: https://falcon-service-prod.eu-west-1.lb.cvent.com/pr53/falcon/v1
+    description: Falcon service, EU (environment=production-eu)
+tags:
+  - name: search
+    description: Event discovery (no auth).
+  - name: sync
+    description: Obtain a Sync Gateway session for an event.
+  - name: syncgateway
+    description: Couchbase Sync Gateway public REST API (db `falcon`).
+  - name: auth
+    description: Login flows. Shapes from code only; not exercised.
+paths:
+  /events/search:
+    post:
+      tags: [search]
+      operationId: searchEvents
+      summary: Search events by free text
+      description: |
+        Matches title text (not ids). With no date params, all dates are returned.
+        `fromDate` alone gives events ending on or after it (the app's "upcoming" tab);
+        `toDate` alone gives events ending before it (the "past" tab), most recent first.
+        Both together give a window. There is no offset; narrow with dates to page.
+      parameters:
+        - $ref: "#/components/parameters/environment"
+        - name: isFullSearch
+          in: query
+          schema: {type: boolean}
+          description: Sent by the app; no observable effect on results.
+        - name: fromDate
+          in: query
+          schema: {type: string, format: date-time}
+        - name: toDate
+          in: query
+          schema: {type: string, format: date-time}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/EventSearchRequest"}
+            example: {searchTerm: conference, limit: 50, appId: null}
+      responses:
+        "200":
+          description: Results
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/EventSearchResponse"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+  /events/search/{eventId}:
+    get:
+      tags: [search]
+      operationId: getEventSearchResult
+      summary: Fetch one event's search card by id
+      parameters:
+        - $ref: "#/components/parameters/eventId"
+        - $ref: "#/components/parameters/environment"
+        - name: livePreview
+          in: query
+          schema: {type: boolean, default: false}
+      responses:
+        "200":
+          description: Event card
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/EventSearchResult"}
+  /events/search/list:
+    post:
+      tags: [search]
+      operationId: listAppEvents
+      summary: List events of a branded (non-default) app
+      description: Requires a branded `appId`; the generic Cvent Events app does not use it.
+      parameters:
+        - $ref: "#/components/parameters/environment"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appId]
+              properties:
+                appId: {type: string}
+      responses:
+        "200":
+          description: Events of the app
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hasHiddenEvents: {type: boolean}
+                  visibleEvents:
+                    type: array
+                    items: {$ref: "#/components/schemas/EventSearchResult"}
+        "422": {$ref: "#/components/responses/ValidationError"}
+  /events/{eventId}/sync/anonymous:
+    post:
+      tags: [sync]
+      operationId: createAnonymousSyncSession
+      summary: Get a Sync Gateway session for a public event
+      description: |
+        Works for events with `isLoginRequired=false`. Events with
+        `isAccessCodeRequired=true` need `accessCode` (not exercised).
+        Returns a cookie session good for ~24h that can read the listed channels.
+      parameters:
+        - $ref: "#/components/parameters/eventId"
+        - $ref: "#/components/parameters/environment"
+        - name: preview
+          in: query
+          schema: {type: boolean, default: false}
+        - name: livePreview
+          in: query
+          schema: {type: boolean, default: false}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: {type: string, format: uuid, description: Random per install.}
+                accessCode: {type: [string, "null"]}
+      responses:
+        "200":
+          description: Session
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SyncSession"}
+  /events/{eventId}/sync/user:
+    post:
+      tags: [sync, auth]
+      operationId: createUserSyncSession
+      summary: Sync session for a logged-in attendee (adds authenticatedChannels)
+      security: [{bearer: []}]
+      parameters:
+        - $ref: "#/components/parameters/eventId"
+        - $ref: "#/components/parameters/environment"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Session
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SyncSession"}
+  /events/{eventId}/sync/planner:
+    post:
+      tags: [sync, auth]
+      operationId: createPlannerSyncSession
+      summary: Planner preview session (`Authorization BEARER {plannerToken}`)
+      security: [{bearer: []}]
+      parameters:
+        - $ref: "#/components/parameters/eventId"
+      responses:
+        "200":
+          description: Session
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/SyncSession"}
+  /assets/{eventId}/exhibitorprofile/{profileId}:
+    get:
+      tags: [search]
+      operationId: getExhibitorImage
+      summary: Exhibitor logo or banner image (use Exhibitor.profileId or bannerImageId)
+      parameters:
+        - $ref: "#/components/parameters/eventId"
+        - name: profileId
+          in: path
+          required: true
+          schema: {type: string}
+        - $ref: "#/components/parameters/environment"
+        - name: imageSize
+          in: query
+          schema: {type: integer, example: 200}
+      responses:
+        "200":
+          description: Image bytes
+          content:
+            image/*: {}
+  /_changes:
+    servers: &sg
+      - url: https://falcon-sg-mobile-pr50-prod.us-east-1.lb.cvent.com/falcon
+        description: Sync Gateway, US
+      - url: https://falcon-sg-mobile-pr53-prod.eu-west-1.lb.cvent.com/falcon
+        description: Sync Gateway, EU
+    get:
+      tags: [syncgateway]
+      operationId: getChanges
+      summary: Changes feed for every channel the session can read
+      description: |
+        Standard Couchbase Sync Gateway `_changes`. With `include_docs=true` this
+        returns the full event dataset. Page with `limit` and `since=last_seq`.
+        `_all_docs` is not usable (504).
+      security: [{syncSession: []}]
+      parameters:
+        - {name: include_docs, in: query, schema: {type: boolean}}
+        - {name: limit, in: query, schema: {type: integer}}
+        - {name: since, in: query, schema: {type: string}, description: "`last_seq` of the previous page."}
+        - {name: filter, in: query, schema: {type: string, enum: [sync_gateway/bychannel]}}
+        - {name: channels, in: query, schema: {type: string}, description: "Comma separated, e.g. `production::event::{eventId}`."}
+      responses:
+        "200":
+          description: Changes
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ChangesResponse"}
+        "401":
+          description: "No session cookie: {error: Unauthorized, reason: Login required}"
+  /{docId}:
+    servers: *sg
+    get:
+      tags: [syncgateway]
+      operationId: getDocument
+      summary: Fetch one document by id
+      security: [{syncSession: []}]
+      parameters:
+        - name: docId
+          in: path
+          required: true
+          schema: {type: string}
+          example: production::falcon-data-service::Event::da1f6296-bb82-42e1-b812-6babba2314da
+      responses:
+        "200":
+          description: Document
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Doc"}
+  /events/{eventId}/login:
+    servers: &login
+      - url: https://web.cvent.com/attendee-login/api/v1
+      - url: https://web-eur.cvent.com/attendee-login/api/v1
+    post:
+      tags: [auth]
+      operationId: eventLogin
+      summary: Attendee login for an event (shape unverified)
+      security: [{bearer: []}]
+      parameters:
+        - $ref: "#/components/parameters/eventId"
+        - $ref: "#/components/parameters/environment"
+      responses:
+        default: {description: Not exercised}
+  /oauth2/login:
+    servers: *login
+    post:
+      tags: [auth]
+      operationId: oauthLogin
+      summary: OAuth login (shape unverified); also /oauth2/verify, /oauth2/token
+      parameters:
+        - $ref: "#/components/parameters/environment"
+        - {name: locale, in: query, schema: {type: string}}
+      responses:
+        default: {description: Not exercised}
+components:
+  securitySchemes:
+    syncSession:
+      type: apiKey
+      in: cookie
+      name: SyncGatewaySession
+      description: "`session_id` from a SyncSession response (cookie name is `cookie_name`)."
+    bearer:
+      type: http
+      scheme: bearer
+  parameters:
+    environment:
+      name: environment
+      in: query
+      required: true
+      schema: {type: string, enum: [production, production-eu]}
+    eventId:
+      name: eventId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+  responses:
+    ValidationError:
+      description: Validation failure (e.g. empty searchTerm, limit > 100, missing appId)
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              errors:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    code: {type: integer}
+                    message: {type: string}
+                    key: {type: string}
+                    field: {type: array, items: {type: string}}
+                    tokens: {type: object}
+  schemas:
+    EventSearchRequest:
+      type: object
+      required: [searchTerm]
+      properties:
+        searchTerm: {type: string, minLength: 1}
+        limit: {type: integer, maximum: 100}
+        appId: {type: [string, "null"], description: "null for the generic app"}
+    EventSearchResponse:
+      type: object
+      properties:
+        eventSearchResults:
+          type: array
+          items: {$ref: "#/components/schemas/EventSearchResult"}
+        isExactMatch: {type: boolean}
+        isDemoEvent: {type: boolean}
+    EventSearchResult:
+      type: object
+      required: [id, title, startDate, endDate]
+      properties:
+        id: {type: string, format: uuid}
+        title: {type: string}
+        description: {type: string, description: HTML}
+        startDate: {type: string, format: date-time}
+        endDate: {type: string, format: date-time}
+        localeId: {type: integer, example: 1033}
+        location: {type: string}
+        city: {type: string}
+        state: {type: string}
+        stateCode: {type: string}
+        postalCode: {type: string}
+        countryCode: {type: string}
+        countryName: {type: string}
+        downloadSize: {type: integer}
+        eventImageUrl: {type: string, format: uri}
+        spaceName: {type: string}
+        isLoginRequired: {type: boolean}
+        isAccessCodeRequired: {type: boolean}
+    SyncSession:
+      type: object
+      properties:
+        cookie_name: {type: string, example: SyncGatewaySession}
+        session_id: {type: string}
+        expires: {type: string, format: date-time}
+        publicChannels:
+          type: array
+          items: {type: string}
+          example:
+            - production::account::{accountId}
+            - production::account::{accountId}::translations
+            - production::event::{eventId}
+            - production::global
+        authenticatedChannels:
+          type: array
+          items: {type: string}
+    ChangesResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              seq: {type: [string, integer]}
+              id: {type: string}
+              deleted: {type: boolean}
+              changes:
+                type: array
+                items: {type: object, properties: {rev: {type: string}}}
+              doc: {$ref: "#/components/schemas/Doc"}
+        last_seq: {type: [string, integer]}
+    DocBase:
+      type: object
+      description: "`_id` is `production::falcon-data-service::{type}::{id}`."
+      required: [_id, type, id]
+      properties:
+        _id: {type: string}
+        _rev: {type: string}
+        type: {type: string}
+        id: {type: string}
+        eventId: {type: string, format: uuid}
+        version: {type: integer}
+        channels:
+          type: array
+          items: {type: object, properties: {channel: {type: string}}}
+    Doc:
+      description: |
+        Discriminated by `type`. Also seen (schemas omitted): SessionCapacity,
+        SponsoredSession, SessionWebcast, SessionCheckInConfig, SessionTags,
+        SessionFilters, SessionBundles, RegTypeSession*, LanguageOverrides,
+        EventTranslation, EventAppConfig, AppConfiguration, EventFeatures,
+        EventCarinaTheme, EventMobileSettings, EventProfileSettings,
+        EventPrivacyCompliancePolicy, EventRichTextDescription, HomeSchedulerConfig,
+        ExhibitorStaff, ExhibitorAnswer, ExhibitorQuestion, ExhibitorCategory,
+        AppointmentType, SpeakerTags, Game, Survey, Account.
+      oneOf:
+        - $ref: "#/components/schemas/Event"
+        - $ref: "#/components/schemas/Session"
+        - $ref: "#/components/schemas/Speaker"
+        - $ref: "#/components/schemas/Exhibitor"
+        - $ref: "#/components/schemas/SponsorshipLevel"
+        - $ref: "#/components/schemas/Location"
+        - $ref: "#/components/schemas/SessionLocations"
+        - $ref: "#/components/schemas/SessionCategories"
+        - $ref: "#/components/schemas/Category"
+        - $ref: "#/components/schemas/EventLocale"
+        - $ref: "#/components/schemas/CustomPage"
+        - $ref: "#/components/schemas/InteractiveFloorPlan"
+        - $ref: "#/components/schemas/DocBase"
+      discriminator: {propertyName: type}
+    Event:
+      allOf:
+        - $ref: "#/components/schemas/DocBase"
+        - type: object
+          properties:
+            type: {const: Event}
+            title: {type: string}
+            description: {type: string, description: HTML}
+            startDate: {type: string, format: date-time}
+            endDate: {type: string, format: date-time}
+            zoneId: {type: string, example: America/New_York}
+            timezone: {type: integer, description: Cvent timezone code}
+            cultureCode: {type: string}
+            languageId: {type: integer}
+            attendingFormat: {type: string, example: Virtual}
+            location: {type: string}
+            address1: {type: string}
+            address2: {type: string}
+            address3: {type: string}
+            city: {type: string}
+            stateCode: {type: string}
+            postalCode: {type: string}
+            countryCode: {type: string}
+            latitude: {type: number}
+            longitude: {type: number}
+            privacyPolicyLink: {type: string}
+            privacyPolicyLinkText: {type: string}
+            showPrivacyPolicy: {type: boolean}
+            showCventPrivacyPolicy: {type: boolean}
+            attendeeHubSSOEvent: {type: boolean}
+            attendeeHubSSOMixedLogin: {type: boolean}
+    Session:
+      allOf:
+        - $ref: "#/components/schemas/DocBase"
+        - type: object
+          properties:
+            type: {const: Session}
+            name: {type: string}
+            code: {type: string}
+            description: {type: string}
+            richTextDescription: {type: string}
+            startTime: {type: string, format: date-time}
+            endTime: {type: string, format: date-time}
+            categoryId: {type: string}
+            categoryName: {type: string}
+            locationId: {type: string}
+            locationCode: {type: string}
+            locationName: {type: string}
+            speakers: {type: array, items: {type: string}, description: Speaker ids}
+            tags: {type: array, items: {type: string}}
+            capacity: {type: integer}
+            displayOnAgenda: {type: boolean}
+            displayOrder: {type: integer}
+            isFeaturedSession: {type: boolean}
+            isIncluded: {type: boolean}
+            hasFees: {type: boolean}
+            isOpenForRegistration: {type: boolean}
+            isOpenForAttendeeHub: {type: boolean}
+            restrictSessionVisibility: {type: boolean}
+            associatedRegistrationTypes: {type: array, items: {type: string}}
+            attachmentCount: {type: integer}
+            documents: {type: array, items: {$ref: "#/components/schemas/Document"}}
+            sessionCustomFieldAnswers: {type: array, items: {type: object}}
+    Speaker:
+      allOf:
+        - $ref: "#/components/schemas/DocBase"
+        - type: object
+          properties:
+            type: {const: Speaker}
+            prefix: {type: string}
+            firstName: {type: string}
+            lastName: {type: string}
+            title: {type: string}
+            company: {type: string}
+            designation: {type: string}
+            biography: {type: string, description: HTML}
+            code: {type: string}
+            order: {type: integer}
+            profileImage: {type: string, format: uri}
+            emailAddress: {type: string, description: "PII; do not republish"}
+            isFeaturedSpeaker: {type: boolean}
+            isDisplayOnWebsite: {type: boolean}
+            facebookProfile: {type: string}
+            linkedInProfile: {type: string}
+            twitterProfile: {type: string}
+            relatedWebsites:
+              type: array
+              items: {type: object, properties: {id: {type: string}, name: {type: string}, url: {type: string}}}
+            tags: {type: array, items: {type: string}}
+            attachmentCount: {type: integer}
+            documents: {type: array, items: {$ref: "#/components/schemas/Document"}}
+    Exhibitor:
+      allOf:
+        - $ref: "#/components/schemas/DocBase"
+        - type: object
+          properties:
+            type: {const: Exhibitor}
+            name: {type: string}
+            description: {type: string}
+            profileId: {type: string, description: Image id for /assets/.../exhibitorprofile/}
+            bannerImageId: {type: string}
+            location: {type: string, description: Booth}
+            featured: {type: boolean}
+            hidden: {type: boolean}
+            deleted: {type: string}
+            eventSponsor: {type: boolean}
+            sponsorOnlyExhibitor: {type: boolean}
+            sponsorshipLevelId: {type: string}
+            sponsorshipLevelIds: {type: array, items: {type: string}}
+            categories: {type: array, items: {type: string}}
+            websiteUrl: {type: string}
+            virtualBoothUrl: {type: string}
+            facebookUrl: {type: string}
+            instagramUrl: {type: string}
+            linkedInUrl: {type: string}
+            twitterUrl: {type: string}
+            email: {type: string}
+            workPhone: {type: string}
+            mobilePhone: {type: string}
+            otherPhone: {type: string}
+            streetAddress: {type: string}
+            address2: {type: string}
+            city: {type: string}
+            state: {type: string}
+            zip: {type: string}
+            updatedAt: {type: string}
+    SponsorshipLevel:
+      allOf:
+        - $ref: "#/components/schemas/DocBase"
+        - type: object
+          properties:
+            type: {const: SponsorshipLevel}
+            name: {type: string}
+            rank: {type: integer}
+            exhibitorTotal: {type: integer}
+            deleted: {type: string}
+    Location:
+      allOf:
+        - $ref: "#/components/schemas/DocBase"
+        - type: object
+          description: Also emitted as type SessionLocation (without hasSessions).
+          properties:
+            type: {enum: [Location, SessionLocation]}
+            name: {type: string}
+            code: {type: string}
+            hasSessions: {type: boolean}
+    SessionLocations:
+      allOf:
+        - $ref: "#/components/schemas/DocBase"
+        - type: object
+          properties:
+            type: {const: SessionLocations}
+            locations:
+              type: array
+              items: {type: object, properties: {id: {type: string}, code: {type: string}, name: {type: string}}}
+    SessionCategories:
+      allOf:
+        - $ref: "#/components/schemas/DocBase"
+        - type: object
+          properties:
+            type: {const: SessionCategories}
+            categories:
+              type: array
+              items: {type: object, properties: {id: {type: string}, name: {type: string}}}
+    Category:
+      allOf:
+        - $ref: "#/components/schemas/DocBase"
+        - type: object
+          description: Global (channel production::global) category names.
+          properties:
+            type: {const: Category}
+            name: {type: string}
+    EventLocale:
+      allOf:
+        - $ref: "#/components/schemas/DocBase"
+        - type: object
+          properties:
+            type: {const: EventLocale}
+            cultureCode: {type: string}
+            localeId: {type: integer}
+            isDefault: {type: boolean}
+            languageName: {type: string}
+            languageCountry: {type: string}
+    CustomPage:
+      allOf:
+        - $ref: "#/components/schemas/DocBase"
+        - type: object
+          properties:
+            type: {const: CustomPage}
+            name: {type: string}
+            pageId: {type: string}
+            pageType: {type: string}
+            pageIcon: {type: string}
+            externalUrl: {type: string}
+            sections:
+              type: array
+              description: "Content uses draft.js JSON (`format: draftjs-nucleus`)."
+              items:
+                type: object
+                properties:
+                  sectionId: {type: string}
+                  sectionOrder: {type: integer}
+                  sectionType: {type: string}
+                  sectionColor: {type: string}
+                  sectionContent: {type: object}
+    InteractiveFloorPlan:
+      allOf:
+        - $ref: "#/components/schemas/DocBase"
+        - type: object
+          properties:
+            type: {const: InteractiveFloorPlan}
+            name: {type: string}
+            description: {type: string}
+            floorId: {type: string}
+            image: {type: object, properties: {name: {type: string}, url: {type: string}, urlOptimized: {type: string}}}
+            markers: {type: array, items: {type: object}}
+            isVisible: {type: boolean}
+            isFeatured: {type: boolean}
+            isDeleted: {type: boolean}
+    Document:
+      type: object
+      properties:
+        id: {type: string}
+        fileName: {type: string}
+        fileUri: {type: string}
+        thumbnailImageUri: {type: string}
+        extension: {type: string}
+        fileSize: {type: integer}
+        assetType: {type: string}
+        alternateText: {type: string}
+        createdDate: {type: string}
+        lastModifiedDate: {type: string}

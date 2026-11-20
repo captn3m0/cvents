@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cvent-events-mirror",
+  "main": "worker/src/index.js",
+  "compatibility_date": "2026-07-01",
+  "observability": { "enabled": true },
+  // Served on cvents.bb8.fun; the script, domain and deploy token live in nebula/cloudflare/cvent.tf.
+  "workers_dev": false,
+  "build": { "command": "node scripts/build-events.mjs", "watch_dir": "events" }
+}
