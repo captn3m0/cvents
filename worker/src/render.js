@@ -42,9 +42,14 @@ const time = (iso, zone) => fmt(iso, zone, { hour: "numeric", minute: "2-digit" 
 const timeEl = (iso, zone) => html`<time datetime="${iso}">${time(iso, zone)}</time>`;
 
 export function dateRange(start, end, zone = "UTC") {
-  const a = fmt(start, zone, { month: "short", day: "numeric", year: "numeric" });
-  const b = fmt(end, zone, { month: "short", day: "numeric", year: "numeric" });
-  return !b || a === b ? a : `${a} – ${b}`;
+  const opts = { month: "short", day: "numeric", year: "numeric" };
+  if (!start || !end) return fmt(start || end, zone, opts);
+  for (const tz of [zone, "UTC"]) {
+    try {
+      return new Intl.DateTimeFormat("en-US", { timeZone: tz, ...opts }).formatRange(new Date(start), new Date(end));
+    } catch {}
+  }
+  return fmt(start, zone, opts);
 }
 
 const place = (e) => [e.venue, e.city, e.state, e.country].filter(Boolean).join(", ");
