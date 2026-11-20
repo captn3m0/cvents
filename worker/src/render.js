@@ -63,13 +63,15 @@ function breadcrumbs(crumbs, name, canonical) {
     itemListElement: items.map(([item, n], i) => ({ "@type": "ListItem", position: i + 1, name: n, item })) };
 }
 
-export function layout({ title, name, description, canonical, body, jsonld, image, crumbs = [], type = "website" }) {
+const plural = (n, w) => (n ? `${n} ${w}${n === 1 ? "" : "s"}` : "");
+
+export function layout({ title, name, description, canonical, body, jsonld, image, crumbs = [], type = "website", noindex = false }) {
   const desc = description ? clip(description) : "";
   const blocks = [jsonld, breadcrumbs(crumbs, name ?? title, canonical)].flat().filter(Boolean);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)}</title>
-${meta("description", desc, "name")}
+${meta("description", desc, "name")}${noindex ? meta("robots", "noindex", "name") : ""}
 ${canonical ? `<link rel="canonical" href="${escapeHtml(canonical)}">` : ""}
 ${meta("og:site_name", SITE)}${meta("og:type", type)}${meta("og:title", name ?? title)}${meta("og:description", desc)}
 ${meta("og:url", canonical)}${meta("og:image", image)}${meta("twitter:card", image ? "summary_large_image" : "summary", "name")}
@@ -94,10 +96,10 @@ function eventList(events) {
 }
 
 export function indexPage(events, { origin, past }) {
-  const title = past ? `Past events · ${SITE}` : SITE;
+  const title = past ? `Past events · ${SITE}` : `${SITE}: agendas, speakers and exhibitors`;
   return layout({
     title, canonical: `${origin}${past ? "/past/" : "/"}`,
-    description: "Schedules, speakers and exhibitors for public events, without installing an app.",
+    description: `Agendas, speakers and exhibitors for ${events.length} ${past ? "past" : "upcoming"} conferences and events, readable without installing an app.`,
     body: html`<h1>${past ? "Past events" : "Upcoming events"}</h1>
 <p class="muted">${events.length} events. ${past ? html`<a href="/">Upcoming events</a>` : html`<a href="/past/">Past events</a>`}</p>
 ${eventList(past ? [...events].reverse() : events)}`,
@@ -162,7 +164,10 @@ export function eventPage(entry, d, { origin }) {
   return layout({
     title: `${e.title} agenda · ${[dateRange(e.start, e.end, e.zone), e.city].filter(Boolean).join(", ")}`,
     name: e.title, canonical: `${origin}/e/${entry.slug}/`, image: e.image, type: "event",
-    description: `${dateRange(e.start, e.end, e.zone)}, ${place(e)}. ${d.sessions.length} sessions, ${d.speakers.length} speakers. ${textOf(e.descriptionHtml)}`,
+    description: [`${dateRange(e.start, e.end, e.zone)}, ${place(e)}.`,
+      [plural(d.sessions.length, "session"), plural(d.speakers.length, "speaker"), plural(d.exhibitors.length, "exhibitor")].filter(Boolean).join(", "),
+      textOf(e.descriptionHtml)].filter(Boolean).join(" "),
+    noindex: !d.sessions.length && !d.speakers.length && !d.exhibitors.length,
     jsonld: eventJsonLd(entry, d, origin),
     body: html`${eventHeader(entry, d, "")}
 ${e.image ? html`<img class="hero" src="${e.image}" alt="${e.title}">` : ""}
