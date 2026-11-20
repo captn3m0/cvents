@@ -1,4 +1,4 @@
-import { escapeHtml } from "./model.js";
+import { ended, escapeHtml } from "./model.js";
 
 class Raw {
   constructor(s) { this.s = s; }
@@ -124,6 +124,7 @@ export const ATCB = `<script src="https://cdn.jsdelivr.net/npm/add-to-calendar-b
  integrity="sha384-lmnBnxg9b0+6VcWEE9T+Nj5rTh4K7s838FrfSQKT20CvpuXOHIqPbaYfcnejDWP6" crossorigin="anonymous" async defer></script>`;
 
 function subscribe(entry, d, origin) {
+  if (ended(d.event.end)) return "";
   const ics = `${origin}/e/${entry.slug}/calendar.ics`;
   return html`<div class="subscribe"><add-to-calendar-button name="${d.event.title}" subscribe="true" icsFile="${ics}"
  options="'Apple','Google','iCal','Outlook.com','Microsoft365'" label="Subscribe to the agenda" lightMode="system"></add-to-calendar-button>

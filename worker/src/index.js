@@ -1,6 +1,7 @@
 import EVENTS from "./events.gen.json";
 import { lastPutError, loadEvent } from "./data.js";
 import { calendar } from "./ics.js";
+import { ended } from "./model.js";
 import * as R from "./render.js";
 
 const BY_SLUG = new Map(EVENTS.map((e) => [e.slug, e]));
@@ -8,6 +9,7 @@ const BY_ID = new Map(EVENTS.map((e) => [e.id, e]));
 
 const send = (body, status = 200, type = "text/html; charset=utf-8", maxAge = 300) =>
   new Response(body, { status, headers: { "content-type": type, "cache-control": `public, max-age=${maxAge}` } });
+const icsGone = () => send("This event has ended; its calendar feed is no longer served.\n", 410, "text/plain; charset=utf-8", 86400);
 const redirect = (to) => new Response(null, { status: 301, headers: { location: to } });
 
 function split(now) {
@@ -16,6 +18,7 @@ function split(now) {
 }
 
 async function eventRoute(entry, rest, ctx, origin, env) {
+  if (rest.join("/") === "calendar.ics" && ended(entry.end)) return icsGone();
   const loaded = await loadEvent(entry, ctx, origin, env.CACHE);
   const res = await eventResponse(entry, rest, loaded, origin);
   res.headers.set("x-data-age", String(Math.round((Date.now() - loaded.at) / 1000)));
@@ -33,6 +36,7 @@ async function eventResponse(entry, rest, loaded, origin) {
   const notFound = () => send(R.messagePage("Not found", "That page does not exist for this event.", opts), 404);
   if (rest.length === 0) return send(R.eventPage(entry, d, opts));
   if (rest[0] === "calendar.ics" && rest.length === 1) {
+    if (ended(d.event.end)) return icsGone();
     return send(calendar(entry, d, origin, loaded.at), 200, "text/calendar; charset=utf-8", 3600);
   }
   if (rest[0] === "sitemap.xml" && rest.length === 1) {

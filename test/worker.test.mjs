@@ -53,3 +53,11 @@ test("builds a valid ICS feed", async () => {
   assert.equal((ics.match(/^BEGIN:VEVENT/gm) ?? []).length, d.sessions.length);
   assert.ok(!/\n(?!\s)[^\r]*\n/.test(ics.replace(/\r\n/g, "")), "bare LF in feed");
 });
+
+test("treats events as ended a day after they finish", async () => {
+  const { ended } = await import("../worker/src/model.js");
+  const now = Date.parse("2026-11-20T12:00:00Z");
+  assert.equal(ended("2026-11-19T13:00:00Z", now), false);
+  assert.equal(ended("2026-11-19T11:00:00Z", now), true);
+  assert.equal(ended(undefined, now), false);
+});

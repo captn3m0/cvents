@@ -14,6 +14,9 @@ const str = (v) => (typeof v === "string" ? v.trim() : "");
 const deleted = (v) => ![undefined, null, false, "", "false", "0", 0].includes(v);
 const url = (v) => (/^https?:\/\//i.test(str(v)) ? str(v) : "");
 
+const GRACE_MS = 24 * 3600 * 1000;
+export const ended = (end, now = Date.now()) => !!end && Date.parse(end) + GRACE_MS < now;
+
 export function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
