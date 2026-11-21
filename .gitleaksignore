@@ -1,0 +1,3 @@
+# IndexNow key is public by design (served at /<key>.txt)
+.github/workflows/site.yml:generic-api-key:88
+wrangler.jsonc:generic-api-key:11

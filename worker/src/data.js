@@ -118,11 +118,19 @@ async function fetchDocs(entry, retry = true) {
   }
 }
 
-async function refresh(entry) {
+async function digest(data) {
+  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(JSON.stringify(data)));
+  return [...new Uint8Array(buf).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function refresh(entry, prev) {
   let value;
   try {
     const docs = await fetchDocs(entry);
-    value = { at: Date.now(), status: "ok", data: await sanitizeModel(normalise(entry, docs)) };
+    const data = await sanitizeModel(normalise(entry, docs));
+    const hash = await digest(data);
+    const at = Date.now();
+    value = { at, status: "ok", hash, changed: prev?.hash === hash ? prev.changed ?? prev.at : at, data };
   } catch (e) {
     if (!(e instanceof Gone)) throw e;
     value = { at: Date.now(), status: "gone" };
@@ -132,9 +140,9 @@ async function refresh(entry) {
   return value;
 }
 
-function refreshOnce(entry) {
+function refreshOnce(entry, prev) {
   if (!inflight.has(entry.id)) {
-    inflight.set(entry.id, refresh(entry).finally(() => inflight.delete(entry.id)));
+    inflight.set(entry.id, refresh(entry, prev).finally(() => inflight.delete(entry.id)));
   }
   return inflight.get(entry.id);
 }
@@ -170,7 +178,7 @@ export async function loadEvent(entry, ctx, site, store) {
   }
   if (hit) remember(entry.id, hit);
   if (hit && isFresh(entry, hit)) return { ...hit, source };
-  if (!hit) return { ...(await refreshOnce(entry)), source: "miss" };
-  ctx.waitUntil(refreshOnce(entry).catch((e) => console.error("refresh", entry.id, e.message)));
+  if (!hit) return { ...(await refreshOnce(entry, await kvGet(entry.id))), source: "miss" };
+  ctx.waitUntil(refreshOnce(entry, hit).catch((e) => console.error("refresh", entry.id, e.message)));
   return { ...hit, source: `${source}-stale` };
 }

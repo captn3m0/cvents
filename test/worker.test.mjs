@@ -71,3 +71,38 @@ test("refreshes hourly near an event and every 6 hours otherwise", async () => {
   assert.equal(at("2026-11-19T00:00:00Z", "2026-11-21T00:00:00Z"), 1);
   assert.equal(at("2026-11-01T00:00:00Z", "2026-11-02T00:00:00Z"), 6);
 });
+
+test("event sitemap omits empty events and sets lastmod", () => {
+  const [entry, docs] = samples[0];
+  const d = normalise(entry, docs);
+  const xml = R.urlset(R.eventUrls(entry, d, "https://example.org", "2026-11-20T00:00:00.000Z"));
+  assert.match(xml, /<lastmod>2026-11-20T00:00:00.000Z<\/lastmod>/);
+  assert.deepEqual(R.eventUrls(entry, { sessions: [], speakers: [], exhibitors: [] }, "https://example.org"), []);
+});
+
+test("event pages carry year titles, calendar link and JSON-LD", () => {
+  const [entry, docs] = samples[0];
+  const d = normalise(entry, docs);
+  const page = R.eventPage(entry, d, { origin: "https://example.org" });
+  assert.match(page, /<title>[^<]*Agenda &#38; Schedule/);
+  assert.match(page, /rel="alternate" type="text\/calendar"/);
+  const ld = [...page.matchAll(/ld\+json">([^<]*)</g)].map((m) => JSON.parse(m[1]));
+  assert.ok(ld.some((o) => o["@type"] === "Event" && o["@id"].endsWith("#event")));
+  const p = d.speakers[0];
+  const sp = R.speakerPage(entry, d, p, { origin: "https://example.org" });
+  assert.match(sp, /"performerIn"/);
+});
+
+test("serves llms.txt with ICS and JSON-LD notes", async () => {
+  const { llmsTxt } = await import("../worker/src/llms.js");
+  const t = llmsTxt("https://example.org");
+  assert.match(t, /calendar\.ics/);
+  assert.match(t, /JSON-LD/);
+  assert.match(t, /https:\/\/example\.org\/sitemap\.xml/);
+});
+
+test("IndexNow key matches between worker and workflow", () => {
+  const key = readFileSync("wrangler.jsonc", "utf8").match(/"INDEXNOW_KEY":\s*"([0-9a-f]{32})"/)?.[1];
+  assert.ok(key);
+  assert.match(readFileSync(".github/workflows/site.yml", "utf8"), new RegExp(`INDEXNOW_KEY: ${key}`));
+});

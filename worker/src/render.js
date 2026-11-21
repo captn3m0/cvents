@@ -23,8 +23,8 @@ ol.list{list-style:none;padding:0;margin:0}ol.list>li{border-bottom:1px solid va
 .when{flex:0 0 120px;color:var(--muted);font-variant-numeric:tabular-nums;font-size:14px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;list-style:none;padding:0}
 .card{border:1px solid var(--line);border-radius:8px;padding:12px}.card img,.avatar{width:64px;height:64px;object-fit:cover;border-radius:50%;background:var(--chip)}
-.logo{width:96px;height:64px;object-fit:contain;border-radius:4px}.hero{width:100%;max-height:280px;object-fit:cover;border-radius:8px}
-.prose img{max-width:100%;height:auto}.subscribe{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0}footer{margin-top:48px;padding-bottom:32px;font-size:13px;color:var(--muted)}
+.logo{width:96px;height:64px;object-fit:contain;border-radius:4px}.event-logo{float:right;width:96px;height:96px;object-fit:contain;margin:16px 0 8px 16px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.prose img{max-width:100%;height:auto}.subscribe{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0;min-height:56px}footer{margin-top:48px;padding-bottom:32px;font-size:13px;color:var(--muted)}
 @media (max-width:600px){ol.list>li{flex-direction:column;gap:2px}.when{flex:none}}
 `;
 
@@ -52,6 +52,15 @@ export function dateRange(start, end, zone = "UTC") {
   return fmt(start, zone, opts);
 }
 
+const withYear = (e) => {
+  const y = fmt(e.start, e.zone, { year: "numeric" });
+  return !y || e.title.includes(y) ? e.title : `${e.title} ${y}`;
+};
+const icsHead = (entry, d, origin) => (ended(d.event.end) ? ""
+  : `<link rel="alternate" type="text/calendar" title="${escapeHtml(d.event.title)}" href="${escapeHtml(origin)}/e/${entry.slug}/calendar.ics">`);
+
+const logoUrl = (entry) => `/logo/${entry.slug}`;
+const ogUrl = (origin, entry) => `${origin}/og/${entry ? entry.slug : "default"}.png`;
 const place = (e) => [e.venue, e.city, e.state, e.country].filter(Boolean).join(", ");
 const ENT = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
 const decode = (s) => s.replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (m, c) => {
@@ -87,7 +96,7 @@ export function layout({ title, name, description, canonical, body, jsonld, imag
 ${meta("description", desc, "name")}${noindex ? meta("robots", "noindex", "name") : ""}
 ${canonical ? `<link rel="canonical" href="${escapeHtml(canonical)}">` : ""}
 ${meta("og:site_name", SITE)}${meta("og:type", type)}${meta("og:title", name ?? title)}${meta("og:description", desc)}
-${meta("og:url", canonical)}${meta("og:image", image)}${meta("twitter:card", image ? "summary_large_image" : "summary", "name")}
+${meta("og:url", canonical)}${meta("og:image", image)}${image ? `<meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">${meta("og:image:alt", name ?? title)}` : ""}${meta("twitter:card", image ? "summary_large_image" : "summary", "name")}
 ${blocks.map(ld).join("\n")}${head}
 <style>${CSS}</style></head><body>
 <header class="site">${out(html`<a href="/">${SITE}</a>${crumbs.map(([href, label]) => html` / <a href="${href}">${label}</a>`)}`)}</header>
@@ -112,7 +121,7 @@ function eventList(events) {
 export function indexPage(events, { origin, past }) {
   const title = past ? `Past events · ${SITE}` : `${SITE}: agendas, speakers and exhibitors`;
   return layout({
-    title, canonical: `${origin}${past ? "/past/" : "/"}`,
+    title, canonical: `${origin}${past ? "/past/" : "/"}`, image: ogUrl(origin),
     head: past ? "" : '<meta name="google-site-verification" content="dpX2x5AsdnOqPxHemSPMifMV1Tf3jnnJGJzhbjkLqqg">',
     description: `Agendas, speakers and exhibitors for ${events.length} ${past ? "past" : "upcoming"} conferences and events, readable without installing an app.`,
     body: html`<h1>${past ? "Past events" : "Upcoming events"}</h1>
@@ -121,8 +130,10 @@ ${eventList(past ? [...events].reverse() : events)}`,
   });
 }
 
-export const ATCB = `<script src="https://cdn.jsdelivr.net/npm/add-to-calendar-button@3.5.1/dist/atcb.min.js"
- integrity="sha384-lmnBnxg9b0+6VcWEE9T+Nj5rTh4K7s838FrfSQKT20CvpuXOHIqPbaYfcnejDWP6" crossorigin="anonymous" async defer></script>`;
+const ATCB_SRC = "https://cdn.jsdelivr.net/npm/add-to-calendar-button@3.5.1/dist/atcb.min.js";
+const ATCB_SRI = "sha384-lmnBnxg9b0+6VcWEE9T+Nj5rTh4K7s838FrfSQKT20CvpuXOHIqPbaYfcnejDWP6";
+// Load the button script once the page is idle so it stays off the critical path.
+export const ATCB = `<script>addEventListener("load",()=>(self.requestIdleCallback||setTimeout)(()=>{const s=document.createElement("script");s.src="${ATCB_SRC}";s.integrity="${ATCB_SRI}";s.crossOrigin="anonymous";document.head.append(s)}))</script>`;
 
 function subscribe(entry, d, origin) {
   if (ended(d.event.end)) return "";
@@ -139,32 +150,39 @@ function eventHeader(entry, d, tab, origin) {
     ["exhibitors/", `Exhibitors (${d.exhibitors.length})`, d.exhibitors.length]];
   return html`<h1>${e.title}</h1>
 <p class="muted">${dateRange(e.start, e.end, e.zone)} · ${e.zone}${e.format ? ` · ${e.format}` : ""}<br>${place(e)}</p>
-${subscribe(entry, d, origin)}
+${ended(e.end) ? html`<p class="chip">This event has ended. The schedule is kept for reference.</p>` : subscribe(entry, d, origin)}
 <nav class="tabs">${tabs.filter((t) => t[2]).map(([p, label]) => html`<a href="${base}${p}" class="${tab === p ? "on" : ""}">${label}</a>`)}</nav>`;
 }
 
 function eventJsonLd(entry, d, origin) {
   const e = d.event;
-  const online = /virtual/i.test(e.format);
-  const hybrid = /hybrid/i.test(e.format);
+  const mode = /hybrid/i.test(e.format) ? "Mixed" : /virtual/i.test(e.format) ? "Online" : "Offline";
+  const url = `${origin}/e/${entry.slug}/`;
   return {
-    "@context": "https://schema.org", "@type": "Event", name: e.title, url: `${origin}/e/${entry.slug}/`,
-    startDate: e.start, endDate: e.end, description: clip(oneLine(e.descriptionHtml), 500) || undefined,
-    image: e.image || undefined,
+    "@context": "https://schema.org", "@type": "Event", "@id": `${url}#event`, name: e.title, url,
+    mainEntityOfPage: url, startDate: e.start, endDate: e.end,
+    description: clip(oneLine(e.descriptionHtml), 500) || undefined,
+    image: [ogUrl(origin, entry), e.image].filter(Boolean),
     eventStatus: "https://schema.org/EventScheduled",
-    eventAttendanceMode: `https://schema.org/${hybrid ? "Mixed" : online ? "Online" : "Offline"}EventAttendanceMode`,
+    eventAttendanceMode: `https://schema.org/${mode}EventAttendanceMode`,
     location: eventLocation(entry, d, origin),
-    performer: d.speakers.slice(0, 20).map((s) => ({ "@type": "Person", name: s.name })),
+    performer: d.speakers.slice(0, 20).map((s) => ({ "@type": "Person", name: s.name, url: `${url}speakers/${s.id}` })),
+    subEvent: d.sessions.slice(0, 10).map((s) => ({ "@type": "Event", name: s.name, startDate: s.start, endDate: s.end || undefined,
+      url: `${url}sessions/${s.id}` })),
   };
 }
 
 function eventLocation(entry, d, origin) {
   const e = d.event;
-  return /virtual/i.test(e.format) ? { "@type": "VirtualLocation", url: `${origin}/e/${entry.slug}/` } : {
-      "@type": "Place", name: e.venue || e.city,
-      address: { "@type": "PostalAddress", streetAddress: e.address.join(", ") || undefined, addressLocality: e.city || undefined,
-        addressRegion: e.state || undefined, postalCode: e.postalCode || undefined, addressCountry: e.country || undefined },
-  };
+  const online = { "@type": "VirtualLocation", url: `${origin}/e/${entry.slug}/` };
+  const physical = e.venue || e.city ? {
+    "@type": "Place", name: e.venue || e.city,
+    address: { "@type": "PostalAddress", streetAddress: e.address.join(", ") || undefined, addressLocality: e.city || undefined,
+      addressRegion: e.state || undefined, postalCode: e.postalCode || undefined, addressCountry: e.country || undefined },
+  } : null;
+  if (/virtual/i.test(e.format)) return online;
+  if (/hybrid/i.test(e.format)) return physical ? [physical, online] : online;
+  return physical || undefined;
 }
 
 const speakerNames = (d, ids) => {
@@ -189,16 +207,15 @@ function sessionRows(entry, d, sessions) {
 export function eventPage(entry, d, { origin }) {
   const e = d.event;
   return layout({
-    title: `${e.title} agenda · ${[dateRange(e.start, e.end, e.zone), e.city].filter(Boolean).join(", ")}`,
-    name: e.title, canonical: `${origin}/e/${entry.slug}/`, image: e.image, type: "event",
+    title: `${withYear(e)} Agenda & Schedule${e.city ? ` · ${e.city}` : ""}`,
+    name: e.title, canonical: `${origin}/e/${entry.slug}/`, image: ogUrl(origin, entry), type: "event",
     description: [`${dateRange(e.start, e.end, e.zone)}, ${place(e)}.`,
       [plural(d.sessions.length, "session"), plural(d.speakers.length, "speaker"), plural(d.exhibitors.length, "exhibitor")].filter(Boolean).join(", "),
       oneLine(e.descriptionHtml)].filter(Boolean).join(" "),
     noindex: !d.sessions.length && !d.speakers.length && !d.exhibitors.length,
-    head: ATCB,
+    head: ATCB + icsHead(entry, d, origin),
     jsonld: eventJsonLd(entry, d, origin),
-    body: html`${eventHeader(entry, d, "", origin)}
-${e.image ? html`<img class="hero" src="${e.image}" alt="${e.title}">` : ""}
+    body: html`${e.image ? html`<img class="event-logo" src="${logoUrl(entry)}" alt="${e.title} logo" width="96" height="96" fetchpriority="high" decoding="async">` : ""}${eventHeader(entry, d, "", origin)}
 ${e.descriptionHtml ? html`<div class="prose">${raw(e.descriptionHtml)}</div>` : ""}
 ${d.sessions.length ? sessionRows(entry, d, d.sessions) : html`<p class="muted">No sessions have been published yet.</p>`}`,
   });
@@ -208,14 +225,15 @@ export function sessionPage(entry, d, s, { origin }) {
   const e = d.event;
   const people = speakerNames(d, s.speakers);
   return layout({
-    title: `${s.name} · ${e.title}`, name: s.name, canonical: `${origin}/e/${entry.slug}/sessions/${s.id}`,
+    title: `${s.name} · ${withYear(e)} Session`, name: s.name, canonical: `${origin}/e/${entry.slug}/sessions/${s.id}`,
     description: `${dayLabel(s.start, e.zone)}, ${time(s.start, e.zone)}${s.room ? `, ${s.room}` : ""} at ${e.title}. ${people.map((p) => p.name).join(", ")}${people.length ? ". " : ""}${oneLine(s.descriptionHtml)}`,
-    crumbs: [[`/e/${entry.slug}/`, e.title]], image: e.image, type: "event",
+    crumbs: [[`/e/${entry.slug}/`, e.title]], image: ogUrl(origin, entry), type: "event",
     jsonld: { "@context": "https://schema.org", "@type": "Event", name: s.name, url: `${origin}/e/${entry.slug}/sessions/${s.id}`,
       startDate: s.start, endDate: s.end || undefined, eventStatus: "https://schema.org/EventScheduled",
-      description: clip(oneLine(s.descriptionHtml), 500) || undefined, image: e.image || undefined,
-      location: eventLocation(entry, d, origin), performer: people.map((p) => ({ "@type": "Person", name: p.name })),
-      superEvent: { "@type": "Event", name: e.title, url: `${origin}/e/${entry.slug}/` } },
+      eventAttendanceMode: `https://schema.org/${/hybrid/i.test(e.format) ? "Mixed" : /virtual/i.test(e.format) ? "Online" : "Offline"}EventAttendanceMode`,
+      description: clip(oneLine(s.descriptionHtml), 500) || undefined, image: [ogUrl(origin, entry), e.image].filter(Boolean),
+      location: eventLocation(entry, d, origin), performer: people.map((p) => ({ "@type": "Person", name: p.name, url: `${origin}/e/${entry.slug}/speakers/${p.id}` })),
+      superEvent: { "@type": "Event", "@id": `${origin}/e/${entry.slug}/#event`, name: e.title, url: `${origin}/e/${entry.slug}/` } },
     body: html`<h1>${s.name}</h1>
 <p class="muted">${dayLabel(s.start, e.zone)}, ${timeEl(s.start, e.zone)}${s.end ? html` – ${timeEl(s.end, e.zone)}` : ""} (${e.zone})<br>
 ${[s.room, s.category].filter(Boolean).join(" · ")}</p>
@@ -226,16 +244,16 @@ ${people.length ? html`<h2>Speakers</h2>${speakerGrid(entry, people)}` : ""}`,
 
 function speakerGrid(entry, people) {
   return html`<ul class="grid">${people.map((p) => html`<li class="card">
-${p.image ? html`<img src="${p.image}" alt="${p.name}" loading="lazy">` : html`<span class="avatar" style="display:block"></span>`}
+${p.image ? html`<img src="${p.image}" alt="${p.name}" width="64" height="64" loading="lazy" decoding="async">` : html`<span class="avatar" style="display:block"></span>`}
 <div><a href="/e/${entry.slug}/speakers/${p.id}">${p.name}</a></div>
 <div class="muted">${[p.title || p.designation, p.company].filter(Boolean).join(", ")}</div></li>`)}</ul>`;
 }
 
 export function speakersPage(entry, d, { origin }) {
   return layout({
-    title: `Speakers · ${d.event.title}`, name: "Speakers", canonical: `${origin}/e/${entry.slug}/speakers/`, image: d.event.image,
+    title: `${withYear(d.event)} Speakers`, name: "Speakers", canonical: `${origin}/e/${entry.slug}/speakers/`, image: ogUrl(origin, entry),
     description: `${d.speakers.length} speakers at ${d.event.title}: ${d.speakers.slice(0, 12).map((p) => p.name).join(", ")}.`,
-    head: ATCB,
+    head: ATCB + icsHead(entry, d, origin),
     crumbs: [[`/e/${entry.slug}/`, d.event.title]],
     body: html`${eventHeader(entry, d, "speakers/", origin)}${speakerGrid(entry, d.speakers)}`,
   });
@@ -245,13 +263,17 @@ export function speakerPage(entry, d, p, { origin }) {
   const sessions = d.sessions.filter((s) => s.speakers.includes(p.id));
   const links = Object.entries(p.links).filter(([, v]) => v);
   return layout({
-    title: `${p.name} · ${d.event.title}`, name: p.name, canonical: `${origin}/e/${entry.slug}/speakers/${p.id}`,
-    image: p.image || d.event.image, type: "profile",
+    title: `${p.name} · Speaker at ${withYear(d.event)}`, name: p.name, canonical: `${origin}/e/${entry.slug}/speakers/${p.id}`,
+    image: ogUrl(origin, entry), type: "profile",
     description: `${[p.title || p.designation, p.company].filter(Boolean).join(", ") || "Speaker"} at ${d.event.title}. ${oneLine(p.bioHtml)}`,
     crumbs: [[`/e/${entry.slug}/`, d.event.title], [`/e/${entry.slug}/speakers/`, "Speakers"]],
-    jsonld: { "@context": "https://schema.org", "@type": "Person", name: p.name, jobTitle: p.title || undefined,
-      worksFor: p.company ? { "@type": "Organization", name: p.company } : undefined, image: p.image || undefined },
-    body: html`${p.image ? html`<img class="avatar" src="${p.image}" alt="${p.name}">` : ""}
+    jsonld: { "@context": "https://schema.org", "@type": "Person", name: p.name, url: `${origin}/e/${entry.slug}/speakers/${p.id}`,
+      jobTitle: p.title || p.designation || undefined, description: clip(oneLine(p.bioHtml), 300) || undefined,
+      worksFor: p.company ? { "@type": "Organization", name: p.company } : undefined, image: p.image || undefined,
+      sameAs: links.length ? links.map(([, v]) => v) : undefined,
+      performerIn: [{ "@type": "Event", "@id": `${origin}/e/${entry.slug}/#event`, name: d.event.title, url: `${origin}/e/${entry.slug}/` },
+        ...sessions.slice(0, 20).map((s) => ({ "@type": "Event", name: s.name, startDate: s.start, url: `${origin}/e/${entry.slug}/sessions/${s.id}` }))] },
+    body: html`${p.image ? html`<img class="avatar" src="${p.image}" alt="${p.name}" width="64" height="64" decoding="async">` : ""}
 <h1>${[p.prefix, p.name].filter(Boolean).join(" ")}</h1>
 <p class="muted">${[p.title || p.designation, p.company].filter(Boolean).join(", ")}</p>
 ${links.length ? html`<p>${links.map(([k, v]) => html`<a href="${v}" rel="nofollow noopener">${k}</a> `)}</p>` : ""}
@@ -264,13 +286,13 @@ export function exhibitorsPage(entry, d, { origin }) {
   const groups = [...d.levels.map((l) => [l.name, d.exhibitors.filter((x) => x.level === l.id)]),
     ["Exhibitors", d.exhibitors.filter((x) => !d.levels.some((l) => l.id === x.level))]].filter(([, l]) => l.length);
   return layout({
-    title: `Exhibitors · ${d.event.title}`, name: "Exhibitors", canonical: `${origin}/e/${entry.slug}/exhibitors/`, image: d.event.image,
+    title: `${withYear(d.event)} Exhibitors & Sponsors`, name: "Exhibitors", canonical: `${origin}/e/${entry.slug}/exhibitors/`, image: ogUrl(origin, entry),
     description: `${d.exhibitors.length} exhibitors and sponsors at ${d.event.title}.`,
-    head: ATCB,
+    head: ATCB + icsHead(entry, d, origin),
     crumbs: [[`/e/${entry.slug}/`, d.event.title]],
     body: html`${eventHeader(entry, d, "exhibitors/", origin)}${groups.map(([name, list]) => html`<h2>${name}</h2>
 <ul class="grid">${list.map((x) => html`<li class="card" id="${x.id}">
-${x.image ? html`<img class="logo" src="${x.image}" alt="${x.name} logo" loading="lazy">` : ""}
+${x.image ? html`<img class="logo" src="${x.image}" alt="${x.name} logo" width="96" height="64" loading="lazy" decoding="async">` : ""}
 <div><strong>${x.name}</strong>${x.booth ? html` <span class="chip">Booth ${x.booth}</span>` : ""}</div>
 ${x.website ? html`<div><a href="${x.website}" rel="nofollow noopener">${host(x.website)}</a></div>` : ""}
 ${x.descriptionHtml ? html`<div class="prose muted">${raw(x.descriptionHtml)}</div>` : ""}</li>`)}</ul>`)}`,
@@ -286,23 +308,25 @@ export function messagePage(title, message, { origin, entry } = {}) {
 }
 
 const xml = (s) => escapeHtml(s);
+const MAX_URLS = 50000;
 
 export function sitemapIndex(events, origin) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 <sitemap><loc>${xml(origin)}/sitemaps/events.xml</loc></sitemap>
-${events.map((e) => `<sitemap><loc>${xml(`${origin}/e/${e.slug}/sitemap.xml`)}</loc></sitemap>`).join("\n")}
+${events.slice(0, MAX_URLS).map((e) => `<sitemap><loc>${xml(`${origin}/e/${e.slug}/sitemap.xml`)}</loc></sitemap>`).join("\n")}
 </sitemapindex>`;
 }
 
 export function urlset(urls) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls.map(([loc, lastmod]) => `<url><loc>${xml(loc)}</loc>${lastmod ? `<lastmod>${xml(lastmod)}</lastmod>` : ""}</url>`).join("\n")}
+${urls.slice(0, MAX_URLS).map(([loc, lastmod]) => `<url><loc>${xml(loc)}</loc>${lastmod ? `<lastmod>${xml(lastmod)}</lastmod>` : ""}</url>`).join("\n")}
 </urlset>`;
 }
 
 export function eventUrls(entry, d, origin, lastmod) {
+  if (!d.sessions.length && !d.speakers.length && !d.exhibitors.length) return [];
   const base = `${origin}/e/${entry.slug}/`;
   return [[base, lastmod],
     ...(d.speakers.length ? [[`${base}speakers/`, lastmod]] : []),

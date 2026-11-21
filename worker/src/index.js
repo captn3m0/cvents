@@ -2,6 +2,8 @@ import EVENTS from "./events.gen.json";
 import { lastPutError, loadEvent } from "./data.js";
 import { calendar } from "./ics.js";
 import { ended } from "./model.js";
+import { llmsTxt } from "./llms.js";
+import { renderOg } from "./og.js";
 import * as R from "./render.js";
 
 const BY_SLUG = new Map(EVENTS.map((e) => [e.slug, e]));
@@ -17,10 +19,28 @@ function split(now) {
   return [EVENTS.filter((e) => (e.end || e.start || "") >= t), EVENTS.filter((e) => (e.end || e.start || "") < t)];
 }
 
-async function eventRoute(entry, rest, ctx, origin, env) {
+// Validators come from the content hash, so unchanged data answers 304 even after a refresh.
+function conditional(req, res, entry, loaded) {
+  if (res.status !== 200 || !loaded.hash) return res;
+  const when = new Date(loaded.changed ?? loaded.at).toUTCString();
+  const etag = `W/"${loaded.hash}${ended(entry.end) ? "e" : ""}"`;
+  const headers = new Headers(res.headers);
+  headers.set("etag", etag);
+  headers.set("last-modified", when);
+  const inm = req.headers.get("if-none-match");
+  const ims = Date.parse(req.headers.get("if-modified-since") ?? "");
+  const same = inm ? inm.split(",").some((t) => t.trim() === etag) : ims >= Math.floor(Date.parse(when) / 1000) * 1000;
+  if (same) {
+    headers.delete("content-type");
+    return new Response(null, { status: 304, headers });
+  }
+  return new Response(res.body, { status: 200, headers });
+}
+
+async function eventRoute(entry, rest, ctx, origin, env, req) {
   if (rest.join("/") === "calendar.ics" && ended(entry.end)) return icsGone();
   const loaded = await loadEvent(entry, ctx, origin, env.CACHE);
-  const res = await eventResponse(entry, rest, loaded, origin);
+  const res = conditional(req, await eventResponse(entry, rest, loaded, origin), entry, loaded);
   res.headers.set("x-data-age", String(Math.round((Date.now() - loaded.at) / 1000)));
   res.headers.set("x-cache", loaded.source);
   if (lastPutError) res.headers.set("x-cache-error", lastPutError);
@@ -40,7 +60,7 @@ async function eventResponse(entry, rest, loaded, origin) {
     return send(calendar(entry, d, origin, loaded.at), 200, "text/calendar; charset=utf-8", 3600);
   }
   if (rest[0] === "sitemap.xml" && rest.length === 1) {
-    return send(R.urlset(R.eventUrls(entry, d, origin)), 200, "application/xml; charset=utf-8", 3600);
+    return send(R.urlset(R.eventUrls(entry, d, origin, new Date(loaded.changed ?? loaded.at).toISOString())), 200, "application/xml; charset=utf-8", 3600);
   }
   const [kind, id] = rest;
   if (kind === "speakers" && rest.length === 1) return d.speakers.length ? send(R.speakersPage(entry, d, opts)) : notFound();
@@ -56,7 +76,42 @@ async function eventResponse(entry, rest, loaded, origin) {
   return notFound();
 }
 
-async function route(url, ctx, env) {
+// Speaker photos come from live data, so cache for six hours; a degraded render is kept for five minutes.
+async function ogImage(url, entry, ctx, env) {
+  const key = new Request(url.origin + url.pathname);
+  const hit = await caches.default.match(key);
+  if (hit) return hit;
+  let speakers = null;
+  if (entry) {
+    try {
+      const loaded = await loadEvent(entry, ctx, url.origin, env.CACHE);
+      const list = loaded.status === "ok" ? loaded.data.speakers : [];
+      const photos = [...list.filter((p) => p.image)].sort((x, y) => y.featured - x.featured).slice(0, 4).map((p) => p.image);
+      speakers = { count: list.length, photos };
+    } catch (e) {
+      console.error("og data", entry.id, e.message);
+    }
+  }
+  const res = send(await renderOg(entry, url.origin, speakers), 200, "image/png", entry && !speakers ? 300 : 21600);
+  ctx.waitUntil(caches.default.put(key, res.clone()));
+  return res;
+}
+
+// Event logos are served from our own domain, resized by Cloudflare Images when enabled, with a month-long cache.
+async function logoImage(url, entry, ctx) {
+  if (!entry.image) return null;
+  const key = new Request(url.origin + url.pathname);
+  const hit = await caches.default.match(key);
+  if (hit) return hit;
+  const up = await fetch(entry.image, { cf: { image: { width: 192, height: 192, fit: "contain", format: "webp" } } });
+  const type = up.headers.get("content-type") || "";
+  if (!up.ok || !type.startsWith("image/")) return null;
+  const res = new Response(up.body, { headers: { "content-type": type, "cache-control": "public, max-age=2592000, immutable" } });
+  ctx.waitUntil(caches.default.put(key, res.clone()));
+  return res;
+}
+
+async function route(url, ctx, env, req) {
   const origin = url.origin;
   const path = url.pathname;
   if (path === "/" || path === "/past/") {
@@ -66,10 +121,16 @@ async function route(url, ctx, env) {
   if (path === "/past") return redirect("/past/");
   if (path === "/api/") return send(R.apiPage(origin), 200, undefined, 3600);
   if (path === "/api") return redirect("/api/");
+  const og = path.match(/^\/og\/([a-z0-9-]+)\.png$/);
+  if (og && (og[1] === "default" || BY_SLUG.has(og[1]))) return ogImage(url, og[1] === "default" ? null : BY_SLUG.get(og[1]), ctx, env);
+  if (env.INDEXNOW_KEY && path === `/${env.INDEXNOW_KEY}.txt`) return send(`${env.INDEXNOW_KEY}\n`, 200, "text/plain; charset=utf-8", 86400);
+  const logo = path.match(/^\/logo\/([a-z0-9-]+)$/);
+  if (logo && BY_SLUG.has(logo[1])) return logoImage(url, BY_SLUG.get(logo[1]), ctx);
+  if (path === "/llms.txt") return send(llmsTxt(origin), 200, "text/plain; charset=utf-8", 86400);
   if (path === "/robots.txt") return send(`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml\n`, 200, "text/plain", 86400);
   if (path === "/sitemap.xml") return send(R.sitemapIndex(EVENTS, origin), 200, "application/xml; charset=utf-8", 3600);
   if (path === "/sitemaps/events.xml") {
-    const urls = [[`${origin}/`], [`${origin}/past/`], [`${origin}/api/`], ...EVENTS.map((e) => [`${origin}/e/${e.slug}/`])];
+    const urls = [[`${origin}/`], [`${origin}/past/`], [`${origin}/api/`]];
     return send(R.urlset(urls), 200, "application/xml; charset=utf-8", 3600);
   }
   const m = path.match(/^\/e\/([a-z0-9-]+)(\/.*)?$/);
@@ -82,7 +143,7 @@ async function route(url, ctx, env) {
     if (!m[2]) return redirect(`/e/${entry.slug}/`);
     const rest = m[2].split("/").filter(Boolean);
     if (m[2].endsWith("/") && rest.length === 2) return redirect(`/e/${entry.slug}/${rest.join("/")}`);
-    return eventRoute(entry, rest, ctx, origin, env);
+    return eventRoute(entry, rest, ctx, origin, env, req);
   }
   return null;
 }
@@ -94,7 +155,7 @@ export default {
     }
     const url = new URL(req.url);
     try {
-      const res = await route(url, ctx, env);
+      const res = await route(url, ctx, env, req);
       return res ?? send(R.messagePage("Not found", "No such page.", { origin: url.origin }), 404);
     } catch (e) {
       console.error("render", url.pathname, e.stack || e.message);
