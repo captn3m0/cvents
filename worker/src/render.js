@@ -24,7 +24,12 @@ ol.list{list-style:none;padding:0;margin:0}ol.list>li{border-bottom:1px solid va
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;list-style:none;padding:0}
 .card{border:1px solid var(--line);border-radius:8px;padding:12px}.card img,.avatar{width:64px;height:64px;object-fit:cover;border-radius:50%;background:var(--chip)}
 .logo{width:96px;height:64px;object-fit:contain;border-radius:4px}.event-logo{float:right;width:96px;height:96px;object-fit:contain;margin:16px 0 8px 16px;border:1px solid var(--line);border-radius:8px;background:#fff}
-.prose img{max-width:100%;height:auto}.subscribe{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0;min-height:56px}footer{margin-top:48px;padding-bottom:32px;font-size:13px;color:var(--muted)}
+.prose img{max-width:100%;height:auto}.subscribe{margin:8px 0}.cal{position:relative;display:inline-block}
+.cal summary{list-style:none;cursor:pointer;background:var(--accent);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:14px;font-weight:600}
+.cal summary::-webkit-details-marker{display:none}
+.cal ul{position:absolute;z-index:2;left:0;top:calc(100% + 4px);min-width:240px;margin:0;padding:6px;list-style:none;background:var(--bg);border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.15)}
+.cal li a,.cal li button{display:block;width:100%;padding:8px 10px;border:0;background:none;color:var(--fg);font:inherit;font-size:14px;text-align:left;text-decoration:none;border-radius:6px;cursor:pointer}
+.cal li a:hover,.cal li button:hover{background:var(--chip)}footer{margin-top:48px;padding-bottom:32px;font-size:13px;color:var(--muted)}
 @media (max-width:600px){ol.list>li{flex-direction:column;gap:2px}.when{flex:none}}
 `;
 
@@ -130,17 +135,24 @@ ${eventList(past ? [...events].reverse() : events)}`,
   });
 }
 
-const ATCB_SRC = "https://cdn.jsdelivr.net/npm/add-to-calendar-button@3.5.1/dist/atcb.min.js";
-const ATCB_SRI = "sha384-lmnBnxg9b0+6VcWEE9T+Nj5rTh4K7s838FrfSQKT20CvpuXOHIqPbaYfcnejDWP6";
-// Load the button script once the page is idle so it stays off the critical path.
-export const ATCB = `<script>addEventListener("load",()=>(self.requestIdleCallback||setTimeout)(()=>{const s=document.createElement("script");s.src="${ATCB_SRC}";s.integrity="${ATCB_SRI}";s.crossOrigin="anonymous";document.head.append(s)}))</script>`;
+const COPY_JS = raw(`<script>document.addEventListener("click",e=>{const b=e.target.closest("[data-copy]");if(b)navigator.clipboard.writeText(b.dataset.copy).then(()=>{b.textContent="Copied"})})</script>`);
 
+// Server-rendered menu of calendar links; only the copy button needs a few lines of script.
 function subscribe(entry, d, origin) {
   if (ended(d.event.end)) return "";
   const ics = `${origin}/e/${entry.slug}/calendar.ics`;
-  return html`<div class="subscribe"><add-to-calendar-button name="${d.event.title}" subscribe="true" icsFile="${ics}"
- options="'Apple','Google','iCal','Outlook.com','Microsoft365'" label="Subscribe to the agenda" lightMode="system"></add-to-calendar-button>
-<a class="muted" href="/e/${entry.slug}/calendar.ics">calendar.ics</a></div>`;
+  const web = ics.replace(/^https?:/, "webcal:");
+  const q = `url=${encodeURIComponent(ics)}&name=${encodeURIComponent(d.event.title)}`;
+  const links = [
+    ["Google Calendar", `https://calendar.google.com/calendar/r?cid=${encodeURIComponent(web)}`],
+    ["Apple Calendar / Outlook desktop", web],
+    ["Outlook.com", `https://outlook.live.com/calendar/0/addfromweb?${q}`],
+    ["Microsoft 365", `https://outlook.office.com/calendar/0/addfromweb?${q}`],
+    ["Download .ics", `/e/${entry.slug}/calendar.ics`],
+  ];
+  return html`<div class="subscribe"><details class="cal"><summary>Subscribe to the agenda</summary><ul>
+${links.map(([label, href]) => html`<li><a href="${href}" rel="nofollow">${label}</a></li>`)}
+<li><button type="button" data-copy="${ics}">Copy feed link</button></li></ul></details>${COPY_JS}</div>`;
 }
 
 function eventHeader(entry, d, tab, origin) {
@@ -213,7 +225,7 @@ export function eventPage(entry, d, { origin }) {
       [plural(d.sessions.length, "session"), plural(d.speakers.length, "speaker"), plural(d.exhibitors.length, "exhibitor")].filter(Boolean).join(", "),
       oneLine(e.descriptionHtml)].filter(Boolean).join(" "),
     noindex: !d.sessions.length && !d.speakers.length && !d.exhibitors.length,
-    head: ATCB + icsHead(entry, d, origin),
+    head: icsHead(entry, d, origin),
     jsonld: eventJsonLd(entry, d, origin),
     body: html`${e.image ? html`<img class="event-logo" src="${logoUrl(entry)}" alt="${e.title} logo" width="96" height="96" fetchpriority="high" decoding="async">` : ""}${eventHeader(entry, d, "", origin)}
 ${e.descriptionHtml ? html`<div class="prose">${raw(e.descriptionHtml)}</div>` : ""}
@@ -253,7 +265,7 @@ export function speakersPage(entry, d, { origin }) {
   return layout({
     title: `${withYear(d.event)} Speakers`, name: "Speakers", canonical: `${origin}/e/${entry.slug}/speakers/`, image: ogUrl(origin, entry),
     description: `${d.speakers.length} speakers at ${d.event.title}: ${d.speakers.slice(0, 12).map((p) => p.name).join(", ")}.`,
-    head: ATCB + icsHead(entry, d, origin),
+    head: icsHead(entry, d, origin),
     crumbs: [[`/e/${entry.slug}/`, d.event.title]],
     body: html`${eventHeader(entry, d, "speakers/", origin)}${speakerGrid(entry, d.speakers)}`,
   });
@@ -288,7 +300,7 @@ export function exhibitorsPage(entry, d, { origin }) {
   return layout({
     title: `${withYear(d.event)} Exhibitors & Sponsors`, name: "Exhibitors", canonical: `${origin}/e/${entry.slug}/exhibitors/`, image: ogUrl(origin, entry),
     description: `${d.exhibitors.length} exhibitors and sponsors at ${d.event.title}.`,
-    head: ATCB + icsHead(entry, d, origin),
+    head: icsHead(entry, d, origin),
     crumbs: [[`/e/${entry.slug}/`, d.event.title]],
     body: html`${eventHeader(entry, d, "exhibitors/", origin)}${groups.map(([name, list]) => html`<h2>${name}</h2>
 <ul class="grid">${list.map((x) => html`<li class="card" id="${x.id}">
