@@ -71,7 +71,7 @@ jobs:
 
   indexnow:
     needs: deploy
-    if: ${{ needs.deploy.result == 'success' }}
+    if: ${{ !cancelled() && needs.deploy.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
