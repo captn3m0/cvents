@@ -1,0 +1,12 @@
+id: db6e55c9-766b-4d64-92a0-891e922f6150
+env: production
+slug: chci-energy-summit-db6e55c9
+title: "CHCI Energy Summit"
+start: "2026-12-05T02:00:00.000Z"
+end: "2026-12-06T01:00:00.000Z"
+location: "Las Vegas Hilton at Resorts World"
+city: "Las Vegas"
+state: "NV"
+country: "US"
+image: "https://custom.cvent.com/D81E35CF99A847568914772FEA3E309F/pix/b03f5a1f7b43448daef1b9557d08e0e6.png"
+discovered: 2026-11-25
