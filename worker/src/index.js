@@ -1,10 +1,12 @@
 import EVENTS from "./events.gen.json";
-import { lastPutError, loadEvent } from "./data.js";
+import { kvIndex, lastPutError, loadEvent } from "./data.js";
 import { calendar } from "./ics.js";
+import * as M from "./metrics.js";
 import { ended } from "./model.js";
 import { llmsTxt } from "./llms.js";
 import { renderOg } from "./og.js";
 import * as R from "./render.js";
+import { globalFamilies } from "./stats.js";
 
 const BY_SLUG = new Map(EVENTS.map((e) => [e.slug, e]));
 const BY_ID = new Map(EVENTS.map((e) => [e.id, e]));
@@ -13,6 +15,25 @@ const send = (body, status = 200, type = "text/html; charset=utf-8", maxAge = 30
   new Response(body, { status, headers: { "content-type": type, "cache-control": `public, max-age=${maxAge}` } });
 const icsGone = () => send("This event has ended; its calendar feed is no longer served.\n", 410, "text/plain; charset=utf-8", 86400);
 const redirect = (to) => new Response(null, { status: 301, headers: { location: to } });
+const METRICS_TYPE = "text/plain; version=0.0.4; charset=utf-8";
+
+async function metrics(req, env, origin, gated) {
+  if (gated && !M.authorized(req.headers.get("authorization"))) {
+    const headers = new Headers({ "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+    headers.append("www-authenticate", 'Basic realm="metrics"');
+    headers.append("www-authenticate", 'Bearer realm="metrics"');
+    return new Response("Authorization required.\n", { status: 401, headers });
+  }
+  let index = null;
+  try {
+    index = await kvIndex(env.CACHE, origin);
+  } catch (e) {
+    M.errors.inc({ where: "kv_index" });
+    console.error("kv index", e.message);
+  }
+  const body = M.exposition(globalFamilies(EVENTS, index, Date.now(), env.CF_VERSION_METADATA));
+  return new Response(body, { headers: { "content-type": METRICS_TYPE, "cache-control": "no-store" } });
+}
 
 function split(now) {
   const t = now.toISOString();
@@ -80,6 +101,7 @@ async function eventResponse(entry, rest, loaded, origin) {
 async function ogImage(url, entry, ctx, env) {
   const key = new Request(url.origin + url.pathname);
   const hit = await caches.default.match(key);
+  M.cacheOps.inc({ kind: "og", op: "get", result: hit ? "hit" : "miss" });
   if (hit) return hit;
   let speakers = null;
   if (entry) {
@@ -89,9 +111,11 @@ async function ogImage(url, entry, ctx, env) {
       const photos = [...list.filter((p) => p.image)].sort((x, y) => y.featured - x.featured).slice(0, 4).map((p) => p.image);
       speakers = { count: list.length, photos };
     } catch (e) {
+      M.errors.inc({ where: "og_data" });
       console.error("og data", entry.id, e.message);
     }
   }
+  M.ogRenders.inc({ kind: entry ? "event" : "default", result: entry && !speakers ? "degraded" : "ok" });
   const res = send(await renderOg(entry, url.origin, speakers), 200, "image/png", entry && !speakers ? 300 : 21600);
   ctx.waitUntil(caches.default.put(key, res.clone()));
   return res;
@@ -102,10 +126,14 @@ async function logoImage(url, entry, ctx) {
   if (!entry.image) return null;
   const key = new Request(url.origin + url.pathname);
   const hit = await caches.default.match(key);
+  M.cacheOps.inc({ kind: "logo", op: "get", result: hit ? "hit" : "miss" });
   if (hit) return hit;
-  const up = await fetch(entry.image, { cf: { image: { width: 192, height: 192, fit: "contain", format: "webp" } } });
+  const up = await M.upstreamFetch("logo", entry.image, { cf: { image: { width: 192, height: 192, fit: "contain", format: "webp" } } });
   const type = up.headers.get("content-type") || "";
-  if (!up.ok || !type.startsWith("image/")) return null;
+  if (!up.ok || !type.startsWith("image/")) {
+    M.imagesRejected.inc({ service: "logo" });
+    return null;
+  }
   const res = new Response(up.body, { headers: { "content-type": type, "cache-control": "public, max-age=2592000, immutable" } });
   ctx.waitUntil(caches.default.put(key, res.clone()));
   return res;
@@ -114,6 +142,7 @@ async function logoImage(url, entry, ctx) {
 async function route(url, ctx, env, req) {
   const origin = url.origin;
   const path = url.pathname;
+  if (path === "/metrics" || path === "/metrics/authenticated") return metrics(req, env, origin, path !== "/metrics");
   if (path === "/" || path === "/past/") {
     const [upcoming, past] = split(new Date());
     return send(R.indexPage(path === "/" ? upcoming : past, { origin, past: path !== "/" }));
@@ -148,19 +177,28 @@ async function route(url, ctx, env, req) {
   return null;
 }
 
+async function handle(req, env, ctx, url) {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    return new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
+  }
+  try {
+    const res = await route(url, ctx, env, req);
+    return res ?? send(R.messagePage("Not found", "No such page.", { origin: url.origin }), 404);
+  } catch (e) {
+    M.errors.inc({ where: "render" });
+    console.error("render", url.pathname, e.stack || e.message);
+    return send(R.messagePage("Temporarily unavailable", "The schedule could not be loaded. Try again in a minute.",
+      { origin: url.origin }), 503, undefined, 0);
+  }
+}
+
 export default {
   async fetch(req, env, ctx) {
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      return new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
-    }
+    M.begin(req);
     const url = new URL(req.url);
-    try {
-      const res = await route(url, ctx, env, req);
-      return res ?? send(R.messagePage("Not found", "No such page.", { origin: url.origin }), 404);
-    } catch (e) {
-      console.error("render", url.pathname, e.stack || e.message);
-      return send(R.messagePage("Temporarily unavailable", "The schedule could not be loaded. Try again in a minute.",
-        { origin: url.origin }), 503, undefined, 0);
-    }
+    const res = await handle(req, env, ctx, url);
+    const method = req.method === "GET" || req.method === "HEAD" ? req.method : "other";
+    M.httpRequests.inc({ route: M.routeName(url.pathname), method, status: String(res.status) });
+    return res;
   },
 };

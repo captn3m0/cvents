@@ -1,4 +1,5 @@
 import { ENVS, ended, normalise } from "./model.js";
+import * as M from "./metrics.js";
 import { sanitizeModel } from "./sanitize.js";
 
 const UA = "cvent/1.0 CventEvents/2.9.0-3612840 (iPhone15,2; ios 18.1)";
@@ -9,9 +10,12 @@ const KEEP_S = 7 * 24 * 3600;
 const SESSION_S = 23 * 3600;
 const PAGE = 1000;
 const MEM_MAX = 64;
+const INDEX_S = 300;
 
 const mem = new Map();
 const inflight = new Map();
+M.gauge("cvent_mem_events", "Events held in the in-memory LRU.", () => mem.size);
+M.gauge("cvent_refreshes_inflight", "Event refreshes currently in flight.", () => inflight.size);
 
 class Gone extends Error {}
 
@@ -21,6 +25,7 @@ const cacheKey = (kind, id) => new Request(`${origin}/__cache/v1/${kind}/${id}`)
 
 async function cacheGet(kind, id) {
   const hit = await caches.default.match(cacheKey(kind, id));
+  M.cacheOps.inc({ kind, op: "get", result: hit ? "hit" : "miss" });
   return hit ? hit.json() : null;
 }
 
@@ -28,17 +33,29 @@ export let lastPutError = "";
 
 async function kvGet(id) {
   try {
-    return kv ? await kv.get(`event:${id}`, "json") : null;
+    if (!kv) return null;
+    const v = await kv.get(`event:${id}`, "json");
+    M.kvOps.inc({ op: "get", result: v ? "hit" : "miss" });
+    return v;
   } catch (e) {
+    M.kvOps.inc({ op: "get", result: "error" });
     console.error("kv get", e.message);
     return null;
   }
 }
 
+const kvMeta = (v) => (v.status !== "ok" ? { at: v.at, status: v.status } : {
+  at: v.at, status: v.status, changed: v.changed,
+  sessions: v.data.sessions.length, speakers: v.data.speakers.length, exhibitors: v.data.exhibitors.length,
+});
+
 async function kvPut(id, value) {
+  if (!kv) return;
   try {
-    if (kv) await kv.put(`event:${id}`, JSON.stringify(value), { expirationTtl: KEEP_S });
+    await kv.put(`event:${id}`, JSON.stringify(value), { expirationTtl: KEEP_S, metadata: kvMeta(value) });
+    M.kvOps.inc({ op: "put", result: "ok" });
   } catch (e) {
+    M.kvOps.inc({ op: "put", result: "error" });
     lastPutError = `kv: ${e.message}`.slice(0, 200);
     console.error("kv put", lastPutError);
   }
@@ -50,7 +67,9 @@ async function cachePut(kind, id, value, ttl) {
     await caches.default.put(cacheKey(kind, id), new Response(body, {
       headers: { "content-type": "application/json", "cache-control": `max-age=${ttl}` },
     }));
+    M.cacheOps.inc({ kind, op: "put", result: "ok" });
   } catch (e) {
+    M.cacheOps.inc({ kind, op: "put", result: "error" });
     lastPutError = `${kind}: ${e.message}`.slice(0, 200);
     console.error("cache put", lastPutError);
   }
@@ -59,14 +78,17 @@ async function cachePut(kind, id, value, ttl) {
 function remember(id, value) {
   mem.delete(id);
   mem.set(id, value);
-  if (mem.size > MEM_MAX) mem.delete(mem.keys().next().value);
+  if (mem.size > MEM_MAX) {
+    mem.delete(mem.keys().next().value);
+    M.memEvictions.inc();
+  }
 }
 
-async function call(url, { body, cookie } = {}) {
+async function call(service, url, { body, cookie } = {}) {
   const headers = { "user-agent": UA, accept: "application/json" };
   if (cookie) headers.cookie = cookie;
   if (body) headers["content-type"] = "application/json";
-  const res = await fetch(url, { method: body ? "POST" : "GET", headers, body: body && JSON.stringify(body) });
+  const res = await M.upstreamFetch(service, url, { method: body ? "POST" : "GET", headers, body: body && JSON.stringify(body) });
   if (res.ok) return res.json();
   const err = new Error(`${res.status} from ${new URL(url).host}${new URL(url).pathname}`);
   err.status = res.status;
@@ -75,12 +97,13 @@ async function call(url, { body, cookie } = {}) {
 
 async function syncCookie(entry, fresh) {
   const cached = !fresh && (await cacheGet("session", entry.id));
+  M.sessions.inc({ source: cached ? "cache" : "new" });
   if (cached) return cached.cookie;
   const [falcon] = ENVS[entry.env];
   const q = new URLSearchParams({ environment: entry.env, preview: "false", livePreview: "false" });
   let s;
   try {
-    s = await call(`${falcon}/events/${entry.id}/sync/anonymous?${q}`, {
+    s = await call("falcon", `${falcon}/events/${entry.id}/sync/anonymous?${q}`, {
       body: { deviceId: crypto.randomUUID(), accessCode: null },
     });
   } catch (e) {
@@ -104,16 +127,22 @@ async function fetchDocs(entry, retry = true) {
         channels: `production::event::${entry.id}`,
       });
       if (since !== null) q.set("since", since);
-      const res = await call(`${sg}/_changes?${q}`, { cookie });
+      const res = await call("sync_gateway", `${sg}/_changes?${q}`, { cookie });
+      M.changesPages.inc();
       for (const row of res.results ?? []) {
-        if (row.deleted || row.doc?._deleted) docs.delete(row.id);
-        else if (row.doc?.type) docs.set(row.doc._id, row.doc);
+        const kind = row.deleted || row.doc?._deleted ? "deleted" : row.doc?.type ? "doc" : "skipped";
+        M.changesDocs.inc({ kind });
+        if (kind === "deleted") docs.delete(row.id);
+        else if (kind === "doc") docs.set(row.doc._id, row.doc);
       }
       if ((res.results ?? []).length < PAGE) return [...docs.values()];
       since = res.last_seq;
     }
   } catch (e) {
-    if (retry && e.status === 401) return fetchDocs(entry, false);
+    if (retry && e.status === 401) {
+      M.sessionRetries.inc();
+      return fetchDocs(entry, false);
+    }
     throw e;
   }
 }
@@ -130,6 +159,7 @@ async function refresh(entry, prev) {
     const data = await sanitizeModel(normalise(entry, docs));
     const hash = await digest(data);
     const at = Date.now();
+    M.refreshContent.inc({ change: !prev?.hash ? "new" : prev.hash === hash ? "same" : "changed" });
     value = { at, status: "ok", hash, changed: prev?.hash === hash ? prev.changed ?? prev.at : at, data };
   } catch (e) {
     if (!(e instanceof Gone)) throw e;
@@ -141,9 +171,20 @@ async function refresh(entry, prev) {
 }
 
 function refreshOnce(entry, prev) {
-  if (!inflight.has(entry.id)) {
-    inflight.set(entry.id, refresh(entry, prev).finally(() => inflight.delete(entry.id)));
+  if (inflight.has(entry.id)) {
+    M.refreshJoins.inc();
+    return inflight.get(entry.id);
   }
+  const stop = M.refreshTime.start();
+  const done = (result) => {
+    M.refreshes.inc({ result });
+    stop({ result });
+  };
+  const job = refresh(entry, prev).then((v) => (done(v.status), v), (e) => {
+    done("error");
+    throw e;
+  });
+  inflight.set(entry.id, job.finally(() => inflight.delete(entry.id)));
   return inflight.get(entry.id);
 }
 
@@ -158,8 +199,22 @@ export function freshFor(entry, v, now = Date.now()) {
 
 const isFresh = (entry, v) => Date.now() - v.at < freshFor(entry, v);
 
-// Look in memory, then the colo cache, then KV; serve stale data while refreshing in the background.
 export async function loadEvent(entry, ctx, site, store) {
+  const stop = M.loadTime.start();
+  try {
+    const v = await lookup(entry, ctx, site, store);
+    M.loads.inc({ source: v.source });
+    return v;
+  } catch (e) {
+    M.loads.inc({ source: "error" });
+    throw e;
+  } finally {
+    stop();
+  }
+}
+
+// Look in memory, then the colo cache, then KV; serve stale data while refreshing in the background.
+async function lookup(entry, ctx, site, store) {
   origin = site;
   kv = store ?? null;
   let hit = mem.get(entry.id);
@@ -181,4 +236,27 @@ export async function loadEvent(entry, ctx, site, store) {
   if (!hit) return { ...(await refreshOnce(entry, await kvGet(entry.id))), source: "miss" };
   ctx.waitUntil(refreshOnce(entry, hit).catch((e) => console.error("refresh", entry.id, e.message)));
   return { ...hit, source: `${source}-stale` };
+}
+
+export async function kvIndex(store, site) {
+  if (!store) return null;
+  origin = site;
+  const hit = await cacheGet("metrics", "kv-index");
+  if (hit) return hit;
+  const rows = [];
+  try {
+    let cursor;
+    do {
+      const page = await store.list({ prefix: "event:", cursor });
+      for (const k of page.keys) rows.push({ id: k.name.slice(6), ...(k.metadata ?? {}) });
+      cursor = page.list_complete ? null : page.cursor;
+    } while (cursor);
+    M.kvOps.inc({ op: "list", result: "ok" });
+  } catch (e) {
+    M.kvOps.inc({ op: "list", result: "error" });
+    throw e;
+  }
+  const index = { at: Date.now(), rows };
+  await cachePut("metrics", "kv-index", index, INDEX_S);
+  return index;
 }

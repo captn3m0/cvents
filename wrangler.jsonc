@@ -7,6 +7,7 @@
   // Served on cvents.bb8.fun; the script, domain and deploy token live in nebula/cloudflare/cvent.tf.
   "workers_dev": false,
   "kv_namespaces": [{ "binding": "CACHE", "id": "3fcb36d5d533469db48901beaaa9a232" }],
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
   // Public by design: IndexNow checks that https://<host>/<key>.txt returns this value.
   "vars": { "INDEXNOW_KEY": "7fb024109656f8eb88433d7b05f706cd" },
   "rules": [

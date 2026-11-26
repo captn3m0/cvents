@@ -3,6 +3,7 @@ import wasm from "../../node_modules/@resvg/resvg-wasm/index_bg.wasm";
 import BOLD from "../fonts/OpenSans-Bold.subset.ttf";
 import REGULAR from "../fonts/OpenSans-Regular.subset.ttf";
 import TEMPLATE from "./og.svg";
+import { imagesRejected, upstreamFetch } from "./metrics.js";
 import { escapeHtml } from "./model.js";
 import { dateRange } from "./render.js";
 
@@ -47,11 +48,13 @@ export function wrap(text, maxPx, maxLines = 4, size = 60, bold = true) {
 async function fetchLogo(url) {
   if (!url) return "";
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    const res = await upstreamFetch("og_image", url, { signal: AbortSignal.timeout(4000) });
     const type = (res.headers.get("content-type") || "").split(";")[0];
-    if (!res.ok || !/^image\/(png|jpeg|gif|webp)$/.test(type)) return "";
-    const buf = new Uint8Array(await res.arrayBuffer());
-    if (!buf.length || buf.length > LOGO_MAX) return "";
+    const buf = res.ok && /^image\/(png|jpeg|gif|webp)$/.test(type) ? new Uint8Array(await res.arrayBuffer()) : null;
+    if (!buf?.length || buf.length > LOGO_MAX) {
+      imagesRejected.inc({ service: "og_image" });
+      return "";
+    }
     let bin = "";
     for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
     return `data:${type};base64,${btoa(bin)}`;

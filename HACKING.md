@@ -33,6 +33,16 @@ uv run scripts/discover.py --env production --term summit --max-new 5
 uv run generator/cvent_sqlite.py --db cvent.sqlite --term summit --max-events 5
 ```
 
+## Metrics
+
+`/metrics` serves Prometheus text. `/metrics/authenticated` serves the same body but
+needs any `Basic` or `Bearer` credentials, because Grafana Cloud only scrapes behind auth.
+
+- Series with `isolate` and `colo` labels come from whichever isolate answered the
+  scrape. They are samples, not global totals.
+- Unlabelled gauges hold everywhere. They come from the event bundle and a KV
+  listing that is cached for five minutes.
+
 Deploys need `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the
 `production` GitHub environment. The Worker, its domain, KV namespace and the
 deploy token are managed in Terraform outside this repository.
