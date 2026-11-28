@@ -1,0 +1,9 @@
+id: 22d3126d-ad83-4b01-b25b-b7b1b9b86b94
+env: production
+slug: ab-jan-2027-event-22d3126d
+title: "AB Jan 2027 Event."
+start: "2027-01-31T11:00:00.000Z"
+end: "2027-02-01T00:00:00.000Z"
+location: "New York"
+country: "UM"
+discovered: 2026-11-28
